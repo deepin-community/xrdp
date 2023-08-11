@@ -1,0 +1,14 @@
+From: Dominik George <nik@naturalnet.de>
+Subject: Use xorgxrdp instead of x11rdp
+
+--- a/sesman/sesman.ini
++++ b/sesman/sesman.ini
+@@ -111,7 +111,7 @@
+ ; CentOS 8              :  param=/usr/libexec/Xorg
+ ; FreeBSD (from 2022Q4) :  param=/usr/local/libexec/Xorg
+ ;
+-param=Xorg
++param=/usr/lib/xorg/Xorg
+ ; Leave the rest parameters as-is unless you understand what will happen.
+ param=-config
+ param=xrdp/xorg.conf

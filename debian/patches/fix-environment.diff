@@ -1,0 +1,14 @@
+Description: Initialise the environment properly
+Author: Thorsten Glaser <tg@debian.org>
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=996418
+Forwarded: https://github.com/neutrinolabs/xrdp/issues/1773
+
+--- a/instfiles/pam.d/xrdp-sesman.debian
++++ b/instfiles/pam.d/xrdp-sesman.debian
+@@ -1,4 +1,6 @@
+ #%PAM-1.0
++auth required pam_env.so readenv=1
++auth required pam_env.so readenv=1 envfile=/etc/default/locale
+ @include common-auth
+ @include common-account
+ @include common-session
