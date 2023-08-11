@@ -1,0 +1,9 @@
+make-fixes.diff
+config.diff
+fix_perms.diff
+systemd.diff
+lfs.diff
+pulse-debian.patch
+var-run.diff
+document-certs.diff
+fix-environment.diff

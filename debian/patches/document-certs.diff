@@ -1,0 +1,16 @@
+Description: Document SSL certificate ownership needs
+Author: Thorsten Glaser <tg@mirbsd.org>
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=860890
+Forwarded: not-yet
+
+--- a/xrdp/xrdp.ini
++++ b/xrdp/xrdp.ini
+@@ -50,6 +50,8 @@
+ 
+ ; X.509 certificate and private key
+ ; openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 365
++; note this needs the user xrdp to be a member of the ssl-cert group, do with e.g.
++;$ sudo adduser xrdp ssl-cert
+ certificate=
+ key_file=
+ 
