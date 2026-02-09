@@ -20,6 +20,7 @@
 #define ARCH_H
 
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(HAVE_STDINT_H)
 #include <stdint.h>
@@ -44,6 +45,17 @@ typedef unsigned long uintptr_t;
 #endif
 
 typedef int bool_t;
+
+// Define Unicode character types
+#if defined(HAVE_UCHAR_H)
+#include <uchar.h>
+#elif defined(HAVE_STDINT_H)
+typedef uint_least16_t char16_t;
+typedef uint_least32_t char32_t;
+#else
+typedef uint16_t char16_t;
+typedef uint32_t char32_t;
+#endif
 
 /* you can define L_ENDIAN or B_ENDIAN and NEED_ALIGN or NO_NEED_ALIGN
    in the makefile to override */
@@ -82,7 +94,7 @@ typedef int bool_t;
     defined(__ia64__) || defined(__arm__) || defined(__sh__) || \
     (defined(__PPC__) && defined(__BIG_ENDIAN__)) || \
     (defined(__ppc__) && defined(__BIG_ENDIAN__)) || \
-    defined(__loongarch__)
+    defined(__loongarch__) || defined(__e2k__)
 #define NEED_ALIGN
 #elif defined(__x86__) || defined(__x86_64__) || \
       defined(__AMD64__) || defined(_M_IX86) || defined (_M_AMD64) || \
@@ -133,12 +145,10 @@ typedef bool_t tbool;
 typedef intptr_t tbus;
 typedef intptr_t tintptr;
 
-/* wide char, socket */
+/* socket */
 #if defined(_WIN32)
-typedef unsigned short twchar;
 typedef unsigned int tsock;
 #else
-typedef int twchar;
 typedef int tsock;
 #endif
 #endif /* DEFINED_Ts */

@@ -1,2 +1,10 @@
-version=4
-https://github.com/neutrinolabs/@PACKAGE@/releases .*/@PACKAGE@@ANY_VERSION@@ARCHIVE_EXT@
+Version: 5
+
+Source: https://api.github.com/repos/neutrinolabs/@PACKAGE@/releases
+Matching-Pattern: https://github.com/neutrinolabs/@PACKAGE@/releases/download/v?[\d.]+/@PACKAGE@@ANY_VERSION@@ARCHIVE_EXT@
+Pgpsigurlmangle: s/$/.asc/
+Searchmode: plain
+
+Template: Github
+Owner: neutrinolabs
+Project: @PACKAGE@

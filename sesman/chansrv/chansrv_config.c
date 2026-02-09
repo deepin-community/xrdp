@@ -33,15 +33,18 @@
 #include "chansrv_common.h"
 #include "chansrv_config.h"
 #include "string_calls.h"
+#include "sesman_clip_restrict.h"
 
 /* Default settings */
-#define DEFAULT_USE_UNIX_SOCKET             0
 #define DEFAULT_RESTRICT_OUTBOUND_CLIPBOARD 0
 #define DEFAULT_RESTRICT_INBOUND_CLIPBOARD  0
 #define DEFAULT_ENABLE_FUSE_MOUNT           1
 #define DEFAULT_FUSE_MOUNT_NAME             "xrdp-client"
 #define DEFAULT_FILE_UMASK                  077
 #define DEFAULT_USE_NAUTILUS3_FLIST_FORMAT  0
+#define DEFAULT_NUM_SILENT_FRAMES_AAC       4
+#define DEFAULT_NUM_SILENT_FRAMES_MP3       2
+#define DEFAULT_MSEC_DO_NOT_SEND            1000
 /**
  * Type used for passing a logging function about
  */
@@ -49,21 +52,6 @@ typedef
 printflike(2, 3)
 enum logReturns (*log_func_t)(const enum logLevels lvl,
                               const char *msg, ...);
-
-/* Map clipboard strings into bitmask values */
-static const struct bitmask_string clip_restrict_map[] =
-{
-    { CLIP_RESTRICT_TEXT, "text"},
-    { CLIP_RESTRICT_FILE, "file"},
-    { CLIP_RESTRICT_IMAGE, "image"},
-    { CLIP_RESTRICT_ALL, "all"},
-    { CLIP_RESTRICT_NONE, "none"},
-    /* Compatibility values */
-    { CLIP_RESTRICT_ALL, "true"},
-    { CLIP_RESTRICT_ALL, "yes"},
-    { CLIP_RESTRICT_NONE, "false"},
-    BITMASK_STRING_END_OF_LIST
-};
 
 /***************************************************************************//**
  * @brief Error logging function to use to log to stdout
@@ -82,41 +70,6 @@ log_to_stdout(const enum logLevels lvl, const char *msg, ...)
     g_writeln("%s", buff);
 
     return LOG_STARTUP_OK;
-}
-
-/***************************************************************************//**
- * Reads the config values we need from the [Globals] section
- *
- * @param logmsg Function to use to log messages
- * @param names List of definitions in the section
- * @params values List of corresponding values for the names
- * @params cfg Pointer to structure we're filling in
- *
- * @return 0 for success
- */
-static int
-read_config_globals(log_func_t logmsg,
-                    struct list *names, struct list *values,
-                    struct config_chansrv *cfg)
-{
-    int error = 0;
-    int index;
-
-    for (index = 0; index < names->count; ++index)
-    {
-        const char *name = (const char *)list_get_item(names, index);
-        const char *value = (const char *)list_get_item(values, index);
-
-        if (g_strcasecmp(name, "ListenAddress") == 0)
-        {
-            if (g_strcasecmp(value, "127.0.0.1") == 0)
-            {
-                cfg->use_unix_socket = 1;
-            }
-        }
-    }
-
-    return error;
 }
 
 /***************************************************************************//**
@@ -146,8 +99,8 @@ read_config_security(log_func_t logmsg,
         if (g_strcasecmp(name, "RestrictOutboundClipboard") == 0)
         {
             cfg->restrict_outbound_clipboard =
-                g_str_to_bitmask(value, clip_restrict_map, ",",
-                                 unrecognised, sizeof(unrecognised));
+                sesman_clip_restrict_string_to_bitmask(
+                    value, unrecognised, sizeof(unrecognised));
             if (unrecognised[0] != '\0')
             {
                 LOG(LOG_LEVEL_WARNING,
@@ -158,8 +111,8 @@ read_config_security(log_func_t logmsg,
         if (g_strcasecmp(name, "RestrictInboundClipboard") == 0)
         {
             cfg->restrict_inbound_clipboard =
-                g_str_to_bitmask(value, clip_restrict_map, ",",
-                                 unrecognised, sizeof(unrecognised));
+                sesman_clip_restrict_string_to_bitmask(
+                    value, unrecognised, sizeof(unrecognised));
             if (unrecognised[0] != '\0')
             {
                 LOG(LOG_LEVEL_WARNING,
@@ -218,6 +171,18 @@ read_config_chansrv(log_func_t logmsg,
         {
             cfg->use_nautilus3_flist_format = g_text2bool(value);
         }
+        else if (g_strcasecmp(name, "SoundNumSilentFramesAAC") == 0)
+        {
+            cfg->num_silent_frames_aac = strtoul(value, NULL, 0);
+        }
+        else if (g_strcasecmp(name, "SoundNumSilentFramesMP3") == 0)
+        {
+            cfg->num_silent_frames_mp3 = strtoul(value, NULL, 0);
+        }
+        else if (g_strcasecmp(name, "SoundMsecDoNotSend") == 0)
+        {
+            cfg->msec_do_not_send = strtoul(value, NULL, 0);
+        }
     }
 
     return error;
@@ -243,13 +208,15 @@ new_config(void)
     }
     else
     {
-        cfg->use_unix_socket = DEFAULT_USE_UNIX_SOCKET;
         cfg->enable_fuse_mount = DEFAULT_ENABLE_FUSE_MOUNT;
         cfg->restrict_outbound_clipboard = DEFAULT_RESTRICT_OUTBOUND_CLIPBOARD;
         cfg->restrict_inbound_clipboard = DEFAULT_RESTRICT_INBOUND_CLIPBOARD;
         cfg->fuse_mount_name = fuse_mount_name;
         cfg->file_umask = DEFAULT_FILE_UMASK;
         cfg->use_nautilus3_flist_format = DEFAULT_USE_NAUTILUS3_FLIST_FORMAT;
+        cfg->num_silent_frames_aac = DEFAULT_NUM_SILENT_FRAMES_AAC;
+        cfg->num_silent_frames_mp3 = DEFAULT_NUM_SILENT_FRAMES_MP3;
+        cfg->msec_do_not_send = DEFAULT_MSEC_DO_NOT_SEND;
     }
 
     return cfg;
@@ -264,7 +231,7 @@ config_read(int use_logger, const char *sesman_ini)
     log_func_t logmsg = (use_logger) ? log_message : log_to_stdout;
     int fd;
 
-    fd = g_file_open_ex(sesman_ini, 1, 0, 0, 0);
+    fd = g_file_open_ro(sesman_ini);
     if (fd < 0)
     {
         logmsg(LOG_LEVEL_ERROR, "Can't open config file %s", sesman_ini);
@@ -284,12 +251,6 @@ config_read(int use_logger, const char *sesman_ini)
 
             names->auto_free = 1;
             values->auto_free = 1;
-
-            if (!error && file_read_section(fd, "Globals", names, values) == 0)
-            {
-                error = read_config_globals(logmsg, names, values, cfg);
-            }
-
 
             if (!error && file_read_section(fd, "Security", names, values) == 0)
             {
@@ -322,40 +283,19 @@ void
 config_dump(struct config_chansrv *config)
 {
     g_writeln("Global configuration:");
-    g_writeln("    UseUnixSocket (derived):   %s",
-              g_bool2text(config->use_unix_socket));
 
     char buf[256];
     g_writeln("\nSecurity configuration:");
-    if (config->restrict_outbound_clipboard == CLIP_RESTRICT_NONE)
-    {
-        g_writeln("    RestrictOutboundClipboard: %s", "none");
-    }
-    else if (config->restrict_outbound_clipboard == CLIP_RESTRICT_ALL)
-    {
-        g_writeln("    RestrictOutboundClipboard: %s", "all");
-    }
-    else
-    {
-        g_bitmask_to_str(config->restrict_outbound_clipboard,
-                         clip_restrict_map, ',', buf, sizeof(buf));
-        g_writeln("    RestrictOutboundClipboard: %s", buf);
-    }
+    sesman_clip_restrict_mask_to_string(
+        config->restrict_outbound_clipboard,
+        buf, sizeof(buf));
+    g_writeln("    RestrictOutboundClipboard: %s", buf);
 
-    if (config->restrict_inbound_clipboard == CLIP_RESTRICT_NONE)
-    {
-        g_writeln("    RestrictInboundClipboard:  %s", "none");
-    }
-    else if (config->restrict_inbound_clipboard == CLIP_RESTRICT_ALL)
-    {
-        g_writeln("    RestrictInboundClipboard:  %s", "all");
-    }
-    else
-    {
-        g_bitmask_to_str(config->restrict_inbound_clipboard,
-                         clip_restrict_map, ',', buf, sizeof(buf));
-        g_writeln("    RestrictInboundClipboard:  %s", buf);
-    }
+    sesman_clip_restrict_mask_to_string(
+        config->restrict_inbound_clipboard,
+        buf, sizeof(buf));
+    g_writeln("    RestrictInboundClipboard:  %s", buf);
+
     g_writeln("\nChansrv configuration:");
     g_writeln("    EnableFuseMount            %s",
               g_bool2text(config->enable_fuse_mount));

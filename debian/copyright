@@ -7,29 +7,7 @@ Files: Makefile.am
  astyle_config.as
  bootstrap
  coding_style.md
- common/Makefile.am
- common/arch.h
- common/defines.h
- common/file.c
- common/file.h
- common/list.c
- common/list.h
- common/list16.c
- common/list16.h
- common/log.c
- common/log.h
- common/os_calls.c
- common/os_calls.h
- common/parse.h
- common/pixman-region.h
- common/rail.h
- common/thread_calls.c
- common/thread_calls.h
- common/trans.c
- common/trans.h
- common/xrdp_client_info.h
- common/xrdp_rail.h
- common/xrdp_sockets.h
+ common/*
  configure.ac
  docs/Makefile.am
  docs/man/Makefile.am
@@ -39,8 +17,8 @@ Files: Makefile.am
  docs/man/xrdp-sesadmin.8.in
  docs/man/xrdp-sesrun.8.in
  docs/man/xrdp.ini.5.in
- fontdump/Makefile
- fontdump/fontdump.c
+ fontutils/*
+ fontutils/windows/fontdump*
  genkeymap/Makefile.am
  genkeymap/dump-keymaps.sh
  genkeymap/readme.txt
@@ -104,6 +82,7 @@ Files: Makefile.am
  librfxcodec/tests/readme.txt
  librfxcodec/tests/rfxcodectest.c
  librfxcodec/tests/rfxencode.c
+ librfxcodec/src/rfxencode_*
  libxrdp/Makefile.am
  libxrdp/libxrdp.c
  libxrdp/libxrdp.h
@@ -130,9 +109,6 @@ Files: Makefile.am
  pkgconfig/Makefile.am
  sesman/Doxyfile
  sesman/Makefile.am
- sesman/access.c
- sesman/access.h
- sesman/auth.h
  sesman/chansrv/Makefile.am
  sesman/chansrv/clipboard-notes.txt
  sesman/chansrv/clipboard_common.h
@@ -154,66 +130,30 @@ Files: Makefile.am
  sesman/chansrv/wave-format-server.txt
  sesman/chansrv/xcommon.c
  sesman/chansrv/xcommon.h
- sesman/config.c
- sesman/config.h
- sesman/env.c
- sesman/env.h
- sesman/libscp/Makefile.am
- sesman/libscp/libscp.h
- sesman/libscp/libscp_commands.h
- sesman/libscp/libscp_commands_mng.h
- sesman/libscp/libscp_connection.c
- sesman/libscp/libscp_connection.h
- sesman/libscp/libscp_init.c
- sesman/libscp/libscp_init.h
- sesman/libscp/libscp_lock.c
- sesman/libscp/libscp_lock.h
- sesman/libscp/libscp_session.c
- sesman/libscp/libscp_session.h
- sesman/libscp/libscp_tcp.c
- sesman/libscp/libscp_tcp.h
- sesman/libscp/libscp_types.h
- sesman/libscp/libscp_types_mng.h
- sesman/libscp/libscp_v0.c
- sesman/libscp/libscp_v0.h
- sesman/libscp/libscp_v1c.c
- sesman/libscp/libscp_v1c.h
- sesman/libscp/libscp_v1c_mng.c
- sesman/libscp/libscp_v1c_mng.h
- sesman/libscp/libscp_v1s.c
- sesman/libscp/libscp_v1s.h
- sesman/libscp/libscp_v1s_mng.c
- sesman/libscp/libscp_v1s_mng.h
- sesman/libscp/libscp_vX.c
- sesman/libscp/libscp_vX.h
  sesman/reconnectwm.sh
- sesman/scp.c
- sesman/scp.h
- sesman/scp_v0.c
- sesman/scp_v0.h
- sesman/scp_v1.c
- sesman/scp_v1.h
- sesman/scp_v1_mng.c
- sesman/scp_v1_mng.h
  sesman/sesman.c
  sesman/sesman.h
  sesman/sesman.ini
- sesman/session.h
  sesman/sig.c
  sesman/sig.h
  sesman/startwm.sh
- sesman/tools/Makefile.am
- sesman/tools/config.c
- sesman/tools/dis.c
- sesman/tools/sesrun.c
- sesman/tools/tcp.c
- sesman/tools/tcp.h
- sesman/tools/xcon.c
- sesman/verify_user.c
- sesman/verify_user_bsd.c
- sesman/verify_user_kerberos.c
- sesman/verify_user_pam.c
- sesman/verify_user_pam_userpass.c
+ sesman/tools/*
+ sesman/libsesman/*
+ sesman/chansrv/pcsc/.gitignore
+ sesman/eicp_process.c
+ sesman/eicp_process.h
+ sesman/ercp_process.c
+ sesman/ercp_process.h
+ sesman/lock_uds.c
+ sesman/lock_uds.h
+ sesman/pre_session_list.c
+ sesman/pre_session_list.h
+ sesman/scp_process.c
+ sesman/scp_process.h
+ sesman/sesexec_control.c
+ sesman/sesexec_control.h
+ sesman/session_list.c
+ sesman/session_list.h
  tests/*
  tools/Makefile.am
  tools/Makefile.in
@@ -256,6 +196,13 @@ Files: Makefile.am
  vrplayer/playvideo.cpp
  vrplayer/playvideo.h
  vrplayer/vrplayer.pro
+ waitforx/*
+ xrdp/README.logo
+ xrdp/sans-18.fv1
+ xrdp/xrdp_egfx.c
+ xrdp/xrdp_egfx.h
+ xrdp/xrdp_logo.png
+ xrdp/xrdp_main_utils.c
  xrdp/Makefile.am
  xrdp/ad24b.bmp
  xrdp/ad256.bmp
@@ -290,10 +237,12 @@ Files: Makefile.am
  xrdpapi/Makefile.am
  xrdpapi/vrplayer.mk
  xrdpvr/Makefile.am
- xup/Makefile.am
- xup/xup.c
- xup/xup.h
-Copyright: 2004-2017, Jay Sorg <jay.sorg@gmail.com>
+ xup/*
+ libipm/*
+Copyright:
+ 2004-2024 Jay Sorg <jay.sorg@gmail.com>
+ 2022 Matt Burt, all xrdp contributors
+ 2016 Emmanuel Blindauer
 License: Apache-2.0
 
 Files: sesman/chansrv/audin.c
@@ -332,8 +281,6 @@ Files: common/fifo.c
  sesman/chansrv/chansrv_fuse.h
  sesman/chansrv/devredir.c
  sesman/chansrv/devredir.h
- sesman/chansrv/fifo.c
- sesman/chansrv/fifo.h
  sesman/chansrv/irp.c
  sesman/chansrv/irp.h
  sesman/chansrv/smartcard.h
@@ -341,11 +288,6 @@ Files: common/fifo.c
  xrdpapi/vrplayer.c
  xrdpvr/xrdpvr_internal.h
 Copyright: 2013, Laxmikant Rashinkar <LK.Rashinkar@gmail.com>
-License: Apache-2.0
-
-Files: sesman/xauth.h
- sesman/xauth.c
-Copyright: 2016 Emmanuel Blindauer
 License: Apache-2.0
 
 Files: sesman/chansrv/chansrv_xfs.c
@@ -403,13 +345,13 @@ Copyright: 2012-2013, Jay Sorg
 License: Apache-2.0
 
 Files: sesman/tools/sesadmin.c
- sesman/tools/sestest.c
 Copyright: 2008, Simone Fedele
 License: GPL-2+
 
 Files: docs/man/xrdp.8.in
  docs/man/xrdp-genkeymap.8.in
  docs/man/xrdp-sesman.8.in
+ docs/man/xrdp-dumpfv1.8.in
 Copyright: Jay Sorg
  Simone Fedele
 License: Apache-2.0
@@ -428,6 +370,7 @@ Files: librfxcodec/src/amd64/funcs_amd64.h
  librfxcodec/src/x86/funcs_x86.h
  librfxcodec/src/x86/rfxcodec_encode_dwt_shift_x86_sse2.asm
  librfxcodec/src/x86/rfxcodec_encode_dwt_shift_x86_sse41.asm
+ librfxcodec/tests/test_dwt_rem.c
  README.md
  NEWS.md
 Copyright: 2011-2016, Jay Sorg
@@ -448,7 +391,7 @@ Files: docs/man/xrdp-keygen.8.in
 Copyright: 2007, 2008, Vincent Bernat <bernat@debian.org>
 License: GPL-2+
 
-Files: sesman/session.c
+Files: sesman/sesexec/*
 Copyright: 1995, Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
   2000-2001, Markus Friedl
   2011-2015, Koichiro Iwao, Kyushu Institute of Technology
@@ -486,6 +429,7 @@ License: Bitstream
 Files: m4/ax_append_flag.m4
  libpainter/m4/ax_append_flag.m4
  librfxcodec/m4/ax_append_flag.m4
+ m4/.gitignore
 Copyright: 2008, Guido U. Draheim <guidod@gmx.de>
  2011, Maarten Bosmans <mkbosmans@gmail.com>
 License: GPL-3+~autoconf
@@ -585,9 +529,15 @@ Files: instfiles/rc.d/xrdp
 Copyright: metalefty
 License: FreeBSD
 
+Files: ulalaca/*
+Copyright: 2022 cheesekun
+ 2022 Gyuhwan Park
+License: Apache-2.0
+
 Files: debian/*
 Copyright: Dominik George <nik@naturalnet.de>
  Thorsten Glaser <tg@mirbsd.org>
+ 2024 Alex Myczko <tar@debian.org>
 License: MirOS
 
 Files: debian/generate-keymap-rm-conffile.sh
@@ -634,7 +584,6 @@ Files: sesman/chansrv/pcsc/dumps/*
  pkgconfig/Makefile.in
  sesman/Makefile.in
  sesman/chansrv/Makefile.in
- sesman/libscp/Makefile.in
  sesman/tools/Makefile.in
  vnc/Makefile.in
  xrdp/Makefile.in
@@ -643,15 +592,16 @@ Files: sesman/chansrv/pcsc/dumps/*
  xup/Makefile.in
  libpainter/config_ac-h.in
  librfxcodec/config_ac-h.in
- fontdump/.gitignore
- m4/.gitignore
- sesman/chansrv/pcsc/.gitignore
  librfxcodec/include/Makefile.in
  librfxcodec/src/amd64/Makefile.in
  librfxcodec/src/x86/Makefile.in
 Copyright: None
 License: None
  Not copyrightable or generated.
+
+Files: third_party/*
+Copyright: CK Tan
+License: Expat
 
 Files: common/pixman-region.c
 Copyright: 1987, 1988, 1989, 1998  The Open Group

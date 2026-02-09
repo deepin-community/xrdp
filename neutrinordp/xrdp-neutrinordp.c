@@ -17,6 +17,17 @@
  * limitations under the License.
  */
 
+#include <freerdp/freerdp.h>
+#include <freerdp/codec/bitmap.h>
+
+// FreeRDP defines some macros that we have different values for.
+// To catch this we need to include the freerdp includes before our
+// local ones (see gcc bug #16358)
+#undef WM_LBUTTONUP
+#undef WM_LBUTTONDOWN
+#undef WM_RBUTTONUP
+#undef WM_RBUTTONDOWN
+
 #if defined(HAVE_CONFIG_H)
 #include <config_ac.h>
 #endif
@@ -26,8 +37,8 @@
 #include "xrdp_rail.h"
 #include "trans.h"
 #include "log.h"
+#include "os_calls.h"
 #include "string_calls.h"
-#include <freerdp/settings.h>
 
 #if defined(VERSION_STRUCT_RDP_FREERDP)
 #if VERSION_STRUCT_RDP_FREERDP > 1
@@ -268,10 +279,9 @@ lxrdp_connect(struct mod *mod)
         }
 #endif
         LOG(LOG_LEVEL_ERROR, "NeutrinoRDP proxy connection: status [Failed],"
-            " RDP client [%s:%s], RDP server [%s:%d], RDP server username [%s],"
+            " RDP client [%s], RDP server [%s:%d], RDP server username [%s],"
             " xrdp pamusername [%s], xrdp process id [%d]",
-            mod->client_info.client_addr,
-            mod->client_info.client_port,
+            mod->client_info.client_description,
             mod->inst->settings->hostname,
             mod->inst->settings->port,
             mod->inst->settings->username,
@@ -282,10 +292,9 @@ lxrdp_connect(struct mod *mod)
     else
     {
         LOG(LOG_LEVEL_INFO, "NeutrinoRDP proxy connection: status [Success],"
-            " RDP client [%s:%s], RDP server [%s:%d], RDP server username [%s],"
+            " RDP client [%s], RDP server [%s:%d], RDP server username [%s],"
             " xrdp pamusername [%s], xrdp process id [%d]",
-            mod->client_info.client_addr,
-            mod->client_info.client_port,
+            mod->client_info.client_description,
             mod->inst->settings->hostname,
             mod->inst->settings->port,
             mod->inst->settings->username,
@@ -317,7 +326,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
 
     switch (msg)
     {
-        case 15: /* key down */
+        case WM_KEYDOWN:
 
             /* Before we handle the first character we synchronize
                capslock and numlock. */
@@ -333,11 +342,11 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->KeyboardEvent(mod->inst->input, param4, param3);
             break;
 
-        case 16: /* key up */
+        case WM_KEYUP:
             mod->inst->input->KeyboardEvent(mod->inst->input, param4, param3);
             break;
 
-        case 17: /* Synchronize */
+        case WM_KEYBRD_SYNC:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "Synchronized event handled : %ld", param1);
             /* In some situations the Synchronize event come to early.
                Therefore we store this information and use it when we
@@ -353,7 +362,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
 
             break;
 
-        case 100: /* mouse move */
+        case WM_MOUSEMOVE: /* mouse move */
             LOG_DEVEL(LOG_LEVEL_DEBUG, "mouse move %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -361,7 +370,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 101: /* left button up */
+        case WM_LBUTTONUP:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "left button up %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -369,7 +378,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 102: /* left button down */
+        case WM_LBUTTONDOWN:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "left button down %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -377,7 +386,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 103: /* right button up */
+        case WM_RBUTTONUP:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "right button up %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -385,7 +394,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 104: /* right button down */
+        case WM_RBUTTONDOWN:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "right button down %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -393,7 +402,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 105: /* middle button up */
+        case WM_BUTTON3UP: /* middle button up */
             LOG_DEVEL(LOG_LEVEL_DEBUG, "middle button up %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -401,7 +410,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 106: /* middle button down */
+        case WM_BUTTON3DOWN: /* middle button down */
             LOG_DEVEL(LOG_LEVEL_DEBUG, "middle button down %ld %ld", param1, param2);
             x = param1;
             y = param2;
@@ -409,23 +418,55 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->input->MouseEvent(mod->inst->input, flags, x, y);
             break;
 
-        case 107: /* wheel up */
+        case WM_BUTTON4UP: /* wheel up */
             flags = PTR_FLAGS_WHEEL | 0x0078;
             mod->inst->input->MouseEvent(mod->inst->input, flags, 0, 0);
             break;
 
-        case 108:
+        case WM_BUTTON4DOWN:
             break;
 
-        case 109: /* wheel down */
+        case WM_BUTTON5UP: /* wheel down */
             flags = PTR_FLAGS_WHEEL | PTR_FLAGS_WHEEL_NEGATIVE | 0x0088;
             mod->inst->input->MouseEvent(mod->inst->input, flags, 0, 0);
             break;
 
-        case 110:
+        case WM_BUTTON5DOWN:
             break;
 
-        case 200:
+        case WM_BUTTON8UP:
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "extended mouse button8 up %ld %ld", param1, param2);
+            x = param1;
+            y = param2;
+            flags = PTR_XFLAGS_BUTTON1;
+            mod->inst->input->ExtendedMouseEvent(mod->inst->input, flags, x, y);
+            break;
+
+        case WM_BUTTON8DOWN:
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "extended mouse button8 down %ld %ld", param1, param2);
+            x = param1;
+            y = param2;
+            flags = PTR_XFLAGS_BUTTON1 | PTR_XFLAGS_DOWN;
+            mod->inst->input->ExtendedMouseEvent(mod->inst->input, flags, x, y);
+            break;
+
+        case WM_BUTTON9UP:
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "extended mouse button9 up %ld %ld", param1, param2);
+            x = param1;
+            y = param2;
+            flags = PTR_XFLAGS_BUTTON2;
+            mod->inst->input->ExtendedMouseEvent(mod->inst->input, flags, x, y);
+            break;
+
+        case WM_BUTTON9DOWN:
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "extended mouse button9 down %ld %ld", param1, param2);
+            x = param1;
+            y = param2;
+            flags = PTR_XFLAGS_BUTTON2 | PTR_XFLAGS_DOWN;
+            mod->inst->input->ExtendedMouseEvent(mod->inst->input, flags, x, y);
+            break;
+
+        case WM_INVALIDATE:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "Invalidate request sent from client");
             x = (param1 >> 16) & 0xffff;
             y = (param1 >> 0) & 0xffff;
@@ -434,7 +475,7 @@ lxrdp_event(struct mod *mod, int msg, long param1, long param2,
             mod->inst->SendInvalidate(mod->inst, -1, x, y, cx, cy);
             break;
 
-        case 0x5555:
+        case WM_CHANNEL_DATA:
             chanid = LOWORD(param1);
             flags = HIWORD(param1);
             size = (int)param2;
@@ -531,10 +572,9 @@ lxrdp_end(struct mod *mod)
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "lxrdp_end:");
     LOG(LOG_LEVEL_INFO, "NeutrinoRDP proxy connection: status [Disconnect],"
-        " RDP client [%s:%s], RDP server [%s:%d], RDP server username [%s],"
+        " RDP client [%s], RDP server [%s:%d], RDP server username [%s],"
         " xrdp pamusername [%s], xrdp process id [%d]",
-        mod->client_info.client_addr,
-        mod->client_info.client_port,
+        mod->client_info.client_description,
         mod->inst->settings->hostname,
         mod->inst->settings->port,
         mod->inst->settings->username,
@@ -837,8 +877,12 @@ lxrdp_server_version_message(struct mod *mod)
 
 /******************************************************************************/
 static int
-lxrdp_server_monitor_resize(struct mod *mod, int width, int height)
+lxrdp_server_monitor_resize(struct mod *mod, int width, int height,
+                            int num_monitors,
+                            const struct monitor_info *monitors,
+                            int *in_progress)
 {
+    *in_progress = 0;
     return 0;
 }
 
@@ -1750,8 +1794,10 @@ lfreerdp_pre_connect(freerdp *instance)
     int index;
     int error;
     int num_chans;
+    int target_chan;
     int ch_flags;
     char ch_name[256];
+    const char *ch_names[MAX_STATIC_CHANNELS];
     char *dst_ch_name;
 
     LOG_DEVEL(LOG_LEVEL_INFO, "lfreerdp_pre_connect:");
@@ -1765,6 +1811,7 @@ lfreerdp_pre_connect(freerdp *instance)
         num_chans = 0;
     }
 
+    target_chan = 0;
     for (index = 0 ; index < num_chans; ++index)
     {
         error = mod->server_query_channel(mod, index, ch_name, &ch_flags);
@@ -1773,21 +1820,31 @@ lfreerdp_pre_connect(freerdp *instance)
             LOG_DEVEL(LOG_LEVEL_DEBUG, "lfreerdp_pre_connect: "
                       "got channel [%s], id [%d], flags [0x%8.8x]",
                       ch_name, index, ch_flags);
-            dst_ch_name = instance->settings->channels[index].name;
-            g_memset(dst_ch_name, 0, 8);
-            g_snprintf(dst_ch_name, 8, "%s", ch_name);
-            instance->settings->channels[index].options = ch_flags;
-        }
-        else
-        {
-            LOG(LOG_LEVEL_ERROR, "lfreerdp_pre_connect: "
-                "Expected %d channels, got %d",
-                num_chans, index);
-            num_chans = index;
+
+            if (g_strcmp(ch_name, DRDYNVC_SVC_CHANNEL_NAME) == 0)
+            {
+                /* xrdp currently reserves dynamic channels for its
+                 * exclusive use (e.g. for GFX support) */
+                LOG(LOG_LEVEL_INFO, "Channel '%s' not passed to module",
+                    ch_name);
+            }
+            else if (target_chan < MAX_STATIC_CHANNELS)
+            {
+                dst_ch_name = instance->settings->channels[target_chan].name;
+                ch_names[target_chan] = dst_ch_name;
+                g_memset(dst_ch_name, 0, CHANNEL_NAME_LEN + 1);
+                g_snprintf(dst_ch_name, CHANNEL_NAME_LEN + 1, "%s", ch_name);
+                instance->settings->channels[target_chan].options = ch_flags;
+                ++target_chan;
+            }
         }
     }
 
-    instance->settings->num_channels = num_chans;
+    g_strnjoin(ch_name, sizeof(ch_name), ",", ch_names, target_chan);
+    LOG(LOG_LEVEL_INFO, "Static channels (from %d) passed to module : %s",
+        num_chans, ch_name);
+
+    instance->settings->num_channels = target_chan;
 
     instance->settings->offscreen_bitmap_cache = 0;
     instance->settings->draw_nine_grid = 0;
@@ -1905,7 +1962,7 @@ lfreerdp_pre_connect(freerdp *instance)
                 (mod->client_info.rail_support_level > 0))
         {
             instance->settings->performance_flags |= (PERF_DISABLE_WALLPAPER |
-                    PERF_DISABLE_FULLWINDOWDRAG);
+                PERF_DISABLE_FULLWINDOWDRAG);
             LOG(LOG_LEVEL_DEBUG, "Add in performance setting for Railsupport:"
                 "[0x%08x]", PERF_DISABLE_WALLPAPER |
                 PERF_DISABLE_FULLWINDOWDRAG);
@@ -1932,15 +1989,17 @@ lfreerdp_pre_connect(freerdp *instance)
     instance->settings->ignore_certificate = 1;
 
     // Multi Monitor Settings
-    instance->settings->num_monitors = mod->client_info.monitorCount;
+    const struct display_size_description *display_sizes =
+            &mod->client_info.display_sizes;
+    instance->settings->num_monitors = display_sizes->monitorCount;
 
-    for (index = 0; index < mod->client_info.monitorCount; index++)
+    for (index = 0; index < display_sizes->monitorCount; index++)
     {
-        instance->settings->monitors[index].x = mod->client_info.minfo[index].left;
-        instance->settings->monitors[index].y = mod->client_info.minfo[index].top;
-        instance->settings->monitors[index].width = mod->client_info.minfo[index].right;
-        instance->settings->monitors[index].height = mod->client_info.minfo[index].bottom;
-        instance->settings->monitors[index].is_primary = mod->client_info.minfo[index].is_primary;
+        instance->settings->monitors[index].x = display_sizes->minfo[index].left;
+        instance->settings->monitors[index].y = display_sizes->minfo[index].top;
+        instance->settings->monitors[index].width = display_sizes->minfo[index].right;
+        instance->settings->monitors[index].height = display_sizes->minfo[index].bottom;
+        instance->settings->monitors[index].is_primary = display_sizes->minfo[index].is_primary;
     }
 
     instance->update->BeginPaint = lfreerdp_begin_paint;

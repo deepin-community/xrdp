@@ -1,2 +1,3 @@
 debian/socksetup usr/share/xrdp/
 debian/startwm.sh etc/xrdp/
+debian/xrdp-colord.rules usr/share/polkit-1/rules.d/

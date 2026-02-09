@@ -2,72 +2,42 @@ EXTRA_DIST = \
   Doxyfile
 
 AM_CPPFLAGS = \
-  -DXRDP_SYSCONF_PATH=\"${sysconfdir}\" \
   -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
   -DXRDP_SBIN_PATH=\"${sbindir}\" \
-  -DXRDP_SHARE_PATH=\"${datadir}/xrdp\" \
+  -DXRDP_LIBEXEC_PATH=\"${libexecdir}/xrdp\" \
   -DXRDP_PID_PATH=\"${localstatedir}/run\" \
-  -DXRDP_SOCKET_PATH=\"${socketdir}\" \
+  -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
+  -I$(top_srcdir)/sesman/libsesman \
   -I$(top_srcdir)/common \
-  -I$(top_srcdir)/sesman/libscp
-
-if SESMAN_BSD
-AUTH_C = verify_user_bsd.c
-AUTH_LIB =
-else
-if SESMAN_PAMUSERPASS
-AUTH_C = verify_user_pam_userpass.c
-AUTH_LIB = -lpam -lpam_userpass
-else
-if SESMAN_KERBEROS
-AUTH_C = verify_user_kerberos.c
-AUTH_LIB = -lkrb5
-else
-if SESMAN_NOPAM
-AUTH_C = verify_user.c
-AUTH_LIB = -lcrypt
-else
-AUTH_C = verify_user_pam.c
-AUTH_LIB = -lpam
-endif
-endif
-endif
-endif
+  -I$(top_srcdir)/libipm
 
 sbin_PROGRAMS = \
   xrdp-sesman
 
 xrdp_sesman_SOURCES = \
-  access.c \
-  access.h \
-  auth.h \
-  config.c \
-  config.h \
-  env.c \
-  env.h \
-  scp.c \
-  scp.h \
-  scp_v0.c \
-  scp_v0.h \
-  scp_v1.c \
-  scp_v1.h \
-  scp_v1_mng.c \
-  scp_v1_mng.h \
+  eicp_process.c \
+  eicp_process.h \
+  ercp_process.c \
+  ercp_process.h \
+  lock_uds.c \
+  lock_uds.h \
+  pre_session_list.c \
+  pre_session_list.h \
+  scp_process.c \
+  scp_process.h \
   sesman.c \
   sesman.h \
-  session.c \
-  session.h \
+  sesexec_control.c \
+  sesexec_control.h \
+  session_list.c \
+  session_list.h \
   sig.c \
-  sig.h \
-  xauth.c \
-  xauth.h \
-  $(AUTH_C)
+  sig.h
 
 xrdp_sesman_LDADD = \
-  $(top_builddir)/common/libcommon.la \
-  $(top_builddir)/sesman/libscp/libscp.la \
-  $(AUTH_LIB) \
-  -lpthread
+  $(top_builddir)/sesman/libsesman/libsesman.la \
+  $(top_builddir)/libipm/libipm.la \
+  $(top_builddir)/common/libcommon.la
 
 sesmansysconfdir=$(sysconfdir)/xrdp
 
@@ -90,6 +60,7 @@ dist_sesmansysconf_SCRIPTS = \
   reconnectwm.sh
 
 SUBDIRS = \
-  libscp \
+  libsesman \
+  sesexec \
   tools \
   chansrv

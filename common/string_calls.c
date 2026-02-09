@@ -21,16 +21,17 @@
 #if defined(HAVE_CONFIG_H)
 #include "config_ac.h"
 #endif
+#include <signal.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-
 #include "log.h"
 #include "os_calls.h"
 #include "string_calls.h"
 #include "defines.h"
+#include "unicode_defines.h"
 
 unsigned int
 g_format_info_string(char *dest, unsigned int len,
@@ -710,168 +711,62 @@ g_strstr(const char *haystack, const char *needle)
 }
 
 /*****************************************************************************/
-int
-g_mbstowcs(twchar *dest, const char *src, int n)
-{
-    wchar_t *ldest;
-    int rv;
-
-    ldest = (wchar_t *)dest;
-    rv = mbstowcs(ldest, src, n);
-    return rv;
-}
-
-/*****************************************************************************/
-int
-g_wcstombs(char *dest, const twchar *src, int n)
-{
-    const wchar_t *lsrc;
-    int rv;
-
-    lsrc = (const wchar_t *)src;
-    rv = wcstombs(dest, lsrc, n);
-    return rv;
-}
-
-/*****************************************************************************/
 /* returns error */
-/* trim spaces and tabs, anything <= space */
-/* trim_flags 1 trim left, 2 trim right, 3 trim both, 4 trim through */
-/* this will always shorten the string or not change it */
 int
 g_strtrim(char *str, int trim_flags)
 {
+#define TRIMMABLE_CHAR(c) ((unsigned char)(c) <= ' ')
+    int rv = 0;
     int index;
-    int len;
-    int text1_index;
-    int got_char;
-    wchar_t *text;
-    wchar_t *text1;
-
-    len = mbstowcs(0, str, 0);
-
-    if (len < 1)
-    {
-        return 0;
-    }
-
-    if ((trim_flags < 1) || (trim_flags > 4))
-    {
-        return 1;
-    }
-
-    text = (wchar_t *)malloc(len * sizeof(wchar_t) + 8);
-    text1 = (wchar_t *)malloc(len * sizeof(wchar_t) + 8);
-    if (text == NULL || text1 == NULL)
-    {
-        free(text);
-        free(text1);
-        return 1;
-    }
-    text1_index = 0;
-    mbstowcs(text, str, len + 1);
+    int j;
 
     switch (trim_flags)
     {
         case 4: /* trim through */
 
-            for (index = 0; index < len; index++)
+            j = 0;
+            for (index = 0; str[index] != '\0'; index++)
             {
-                if (text[index] > 32)
+                if (!TRIMMABLE_CHAR(str[index]))
                 {
-                    text1[text1_index] = text[index];
-                    text1_index++;
+                    str[j++] = str[index];
                 }
             }
 
-            text1[text1_index] = 0;
+            str[j] = '\0';
             break;
+
         case 3: /* trim both */
-            got_char = 0;
-
-            for (index = 0; index < len; index++)
-            {
-                if (got_char)
-                {
-                    text1[text1_index] = text[index];
-                    text1_index++;
-                }
-                else
-                {
-                    if (text[index] > 32)
-                    {
-                        text1[text1_index] = text[index];
-                        text1_index++;
-                        got_char = 1;
-                    }
-                }
-            }
-
-            text1[text1_index] = 0;
-            len = text1_index;
-
-            /* trim right */
-            for (index = len - 1; index >= 0; index--)
-            {
-                if (text1[index] > 32)
-                {
-                    break;
-                }
-            }
-
-            text1_index = index + 1;
-            text1[text1_index] = 0;
+            rv = g_strtrim(str, 1) || g_strtrim(str, 2);
             break;
+
         case 2: /* trim right */
-
-            /* copy it */
-            for (index = 0; index < len; index++)
+            index = strlen(str);
+            while (index > 0 && TRIMMABLE_CHAR(str[index - 1]))
             {
-                text1[text1_index] = text[index];
-                text1_index++;
+                --index;
             }
-
-            /* trim right */
-            for (index = len - 1; index >= 0; index--)
-            {
-                if (text1[index] > 32)
-                {
-                    break;
-                }
-            }
-
-            text1_index = index + 1;
-            text1[text1_index] = 0;
+            str[index] = '\0';
             break;
+
         case 1: /* trim left */
-            got_char = 0;
-
-            for (index = 0; index < len; index++)
+            index = 0;
+            while (str[index] != '\0' && TRIMMABLE_CHAR(str[index]))
             {
-                if (got_char)
-                {
-                    text1[text1_index] = text[index];
-                    text1_index++;
-                }
-                else
-                {
-                    if (text[index] > 32)
-                    {
-                        text1[text1_index] = text[index];
-                        text1_index++;
-                        got_char = 1;
-                    }
-                }
+                ++index;
             }
-
-            text1[text1_index] = 0;
+            if (index > 0)
+            {
+                memmove(str, str + index, strlen(str) + 1 - index);
+            }
             break;
+
+        default:
+            rv = 1;
     }
 
-    wcstombs(str, text1, text1_index + 1);
-    free(text);
-    free(text1);
-    return 0;
+    return rv;
+#undef TRIMMABLE_CHAR
 }
 
 /*****************************************************************************/
@@ -921,6 +816,7 @@ g_strnjoin(char *dest, int dest_len, const char *joiner, const char *src[], int 
     return dest;
 }
 
+/*****************************************************************************/
 int
 g_bitmask_to_str(int bitmask, const struct bitmask_string bitdefs[],
                  char delim, char *buff, int bufflen)
@@ -987,6 +883,7 @@ g_bitmask_to_str(int bitmask, const struct bitmask_string bitdefs[],
     return rlen;
 }
 
+/*****************************************************************************/
 int
 g_str_to_bitmask(const char *str, const struct bitmask_string bitdefs[],
                  const char *delim, char *unrecognised, int unrecognised_len)
@@ -1055,3 +952,535 @@ g_str_to_bitmask(const char *str, const struct bitmask_string bitdefs[],
     return mask;
 }
 
+/*****************************************************************************/
+int
+g_bitmask_to_charstr(int bitmask, const struct bitmask_char bitdefs[],
+                     char *buff, int bufflen, int *rest)
+{
+    int rlen = 0; /* Returned length */
+
+    if (bufflen <= 0) /* Caller error */
+    {
+        rlen = -1;
+    }
+    else
+    {
+        char *p = buff;
+        /* Find the last writeable character in the buffer */
+        const char *last = buff + (bufflen - 1);
+
+        const struct bitmask_char *b;
+
+        for (b = &bitdefs[0] ; b->c != '\0'; ++b)
+        {
+            if ((bitmask & b->mask) != 0)
+            {
+                if (p < last)
+                {
+                    *p++ = b->c;
+                }
+                ++rlen;
+
+                /* Remove the bit so we don't report it back */
+                bitmask &= ~b->mask;
+            }
+        }
+        *p = '\0';
+
+        if (rest != NULL)
+        {
+            *rest = bitmask;
+        }
+    }
+
+    return rlen;
+}
+
+/*****************************************************************************/
+int
+g_charstr_to_bitmask(const char *str, const struct bitmask_char bitdefs[],
+                     char *unrecognised, int unrecognised_len)
+{
+    int bitmask = 0;
+    const char *cp;
+    int j = 0;
+
+    if (str != NULL && bitdefs != NULL)
+    {
+        for (cp = str ; *cp != '\0' ; ++cp)
+        {
+            const struct bitmask_char *b;
+            char c = toupper(*cp);
+
+            for (b = &bitdefs[0] ; b->c != '\0'; ++b)
+            {
+                if (toupper(b->c) == c)
+                {
+                    bitmask |= b->mask;
+                    break;
+                }
+            }
+            if (b->c == '\0')
+            {
+                if (unrecognised != NULL && j < (unrecognised_len - 1))
+                {
+                    unrecognised[j++] = *cp;
+                }
+            }
+        }
+    }
+
+    if (unrecognised != NULL && j < unrecognised_len)
+    {
+        unrecognised[j] = '\0';
+    }
+
+    return bitmask;
+}
+
+/*****************************************************************************/
+/*
+ * Looks for a simple mapping of signal number to name
+ */
+static const char *
+find_sig_name(int signum)
+{
+    typedef struct
+    {
+        int num;
+        const char *name;
+    } sig_to_name_type;
+
+    // Map a string 'zzz' to { SIGzzz, "zzz"} for making
+    // typo-free sig_to_name_type objects
+#   define DEFSIG(sig) { SIG ## sig, # sig }
+
+    // Entries in this array are taken from
+    // The Single UNIX ® Specification, Version 2 (1997)
+    // plus additions from specific operating systems.
+    //
+    // The SUS requires these to be positive integer constants with a
+    // macro definition.  Note that SIGRTMIN and SIGRTMAX on Linux are
+    // NOT constants, so have to be handled separately.
+    static const sig_to_name_type sigmap[] =
+    {
+        // Names from SUS v2, in the order they are listed in that document
+        // that *should* be defined everywhere
+        //
+        // Commented out definitions below are NOT used everywhere
+        DEFSIG(ABRT), DEFSIG(ALRM), DEFSIG(FPE), DEFSIG(HUP),
+        DEFSIG(ILL), DEFSIG(INT), DEFSIG(KILL), DEFSIG(PIPE),
+        DEFSIG(QUIT), DEFSIG(SEGV), DEFSIG(TERM), DEFSIG(USR1),
+        DEFSIG(USR2), DEFSIG(CHLD), DEFSIG(CONT), DEFSIG(STOP),
+        DEFSIG(TSTP), DEFSIG(TTIN), DEFSIG(TTOU), DEFSIG(BUS),
+        /* DEFSIG(POLL), */ /* DEFSIG(PROF), */ DEFSIG(SYS), DEFSIG(TRAP),
+        DEFSIG(URG), DEFSIG(VTALRM), DEFSIG(XCPU), DEFSIG(XFSZ),
+
+        // SIGPOLL and SIGPROF are marked as obselescent in 1003.1-2017,
+        // Also SIGPOLL isn't in *BSD operating systems which use SIGIO
+#ifdef SIGPOLL
+        DEFSIG(POLL),
+#endif
+#ifdef SIGPROF
+        DEFSIG(PROF),
+#endif
+
+        // BSD signals (from FreeBSD/OpenBSD sys/signal.h and
+        // Darwin/Illumos signal.h)
+#ifdef SIGEMT
+        DEFSIG(EMT),
+#endif
+#ifdef SIGIO
+        DEFSIG(IO),
+#endif
+#ifdef SIGWINCH
+        DEFSIG(WINCH),
+#endif
+#ifdef SIGINFO
+        DEFSIG(INFO),
+#endif
+#ifdef SIGTHR
+        DEFSIG(THR),
+#endif
+#ifdef SIGLIBRT
+        DEFSIG(LIBRT),
+#endif
+#ifdef SIGPWR
+        DEFSIG(PWR),
+#endif
+#ifdef SIGWAITING
+        DEFSIG(WAITING),
+#endif
+#ifdef SIGLWP
+        DEFSIG(LWP),
+#endif
+
+        // Linux additions to *BSD (signal(7))
+#ifdef SIGLOST
+        DEFSIG(LOST),
+#endif
+#ifdef SIGSTKFLT
+        DEFSIG(STKFLT),
+#endif
+
+        // Terminator
+        {0, NULL}
+#undef DEFSIG
+    };
+
+    const sig_to_name_type *p;
+
+    for (p = &sigmap[0] ; p->name != NULL ; ++p)
+    {
+        if (p->num == signum)
+        {
+            return p->name;
+        }
+    }
+
+    // These aren't constants on Linux
+#ifdef SIGRTMIN
+    if (signum == SIGRTMIN)
+    {
+        return "RTMIN";
+    }
+#endif
+#ifdef SIGRTMAX
+    if (signum == SIGRTMAX)
+    {
+        return "RTMAX";
+    }
+#endif
+
+    return NULL;
+}
+
+/*****************************************************************************/
+char *
+g_sig2text(int signum, char sigstr[])
+{
+    if (signum >= 0)
+    {
+        const char *name = find_sig_name(signum);
+
+        if (name != NULL)
+        {
+            g_snprintf(sigstr, MAXSTRSIGLEN, "SIG%s", name);
+            return sigstr;
+        }
+
+#if defined(SIGRTMIN) && defined(SIGRTMAX)
+        if (signum > SIGRTMIN && signum < SIGRTMAX)
+        {
+            g_snprintf(sigstr, MAXSTRSIGLEN, "SIGRTMIN+%d", signum - SIGRTMIN);
+            return sigstr;
+        }
+#endif
+    }
+
+    // If all else fails...
+    g_snprintf(sigstr, MAXSTRSIGLEN, "SIG#%d", signum);
+    return sigstr;
+}
+
+/*****************************************************************************/
+char32_t
+utf8_get_next_char(const char **utf8str_ref, unsigned int *len_ref)
+{
+    /*
+     * Macro used to parse a continuation character
+     * @param cp Character Pointer (incremented on success)
+     * @param end One character past end of input string
+     * @param value The value we're constructing
+     * @param finish_label Where to go in the event of an error */
+#define PARSE_CONTINUATION_CHARACTER(cp, end, value, finish_label) \
+    { \
+        /* Error if we're out of data, or this char isn't a continuation */ \
+        if (cp == end || !IS_VALID_CONTINUATION_CHAR(*cp)) \
+        { \
+            value = UCS_REPLACEMENT_CHARACTER; \
+            goto finish_label; \
+        } \
+        value = (value) << 6 | (*cp & 0x3f); \
+        ++cp; \
+    }
+
+    char32_t rv;
+
+    /* Easier to work with unsigned chars and no indirection */
+    const unsigned char *cp = (const unsigned char *)*utf8str_ref;
+    const unsigned char *end = (len_ref != NULL) ? cp + *len_ref : cp + 6;
+
+    if (cp == end)
+    {
+        return 0; // Pathological case
+    }
+
+    unsigned int c0 = *cp++;
+
+    if (c0 < 0x80)
+    {
+        rv = c0;
+    }
+    else if (c0 < 0xc0)
+    {
+        /* Unexpected continuation character */
+        rv = UCS_REPLACEMENT_CHARACTER;
+    }
+    else if (c0 < 0xe0)
+    {
+        /* Valid start character for sequence of length 2
+         * U-00000080 – U-000007FF */
+        rv = (c0 & 0x1f);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+
+        if (rv < 0x80 || INVALID_UNICODE_80_TO_7FF(rv))
+        {
+            rv = UCS_REPLACEMENT_CHARACTER;
+        }
+    }
+    else if (c0 < 0xf0)
+    {
+        /* Valid start character for sequence of length 3
+         *  U-00000800 – U-0000FFFF */
+        rv = (c0 & 0xf);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        if (rv < 0x800 || INVALID_UNICODE_800_TO_FFFF(rv))
+        {
+            rv = UCS_REPLACEMENT_CHARACTER;
+        }
+    }
+    else if (c0 < 0xf8)
+    {
+        /* Valid start character for sequence of length 4
+         * U-00010000 – U-0001FFFFF */
+        rv = (c0 & 0x7);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        if (rv < 0x10000 || INVALID_UNICODE_10000_TO_1FFFFF(rv))
+        {
+            rv = UCS_REPLACEMENT_CHARACTER;
+        }
+    }
+    else if (c0 < 0xfc)
+    {
+        /* Valid start character for sequence of length 5
+         * U-00200000 – U-03FFFFFF */
+        rv = (c0 & 0x3);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+
+        // These values are currently unsupported
+        rv = UCS_REPLACEMENT_CHARACTER;
+    }
+
+    else if (c0 < 0xfe)
+    {
+        /* Valid start character for sequence of length 6
+         * U-04000000 – U-7FFFFFFF */
+        rv = (c0 & 0x1);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+        PARSE_CONTINUATION_CHARACTER(cp, end, rv, finish);
+
+        // These values are currently unsupported
+        rv = UCS_REPLACEMENT_CHARACTER;
+    }
+    else
+    {
+        // Invalid characters
+        rv = UCS_REPLACEMENT_CHARACTER;
+    }
+
+finish:
+
+    if (len_ref)
+    {
+        *len_ref -= ((const char *)cp - *utf8str_ref);
+    }
+    *utf8str_ref = (const char *)cp;
+
+    return rv;
+#undef PARSE_CONTINUATION_CHARACTER
+}
+
+/*****************************************************************************/
+unsigned int
+utf_char32_to_utf8(char32_t c32, char *u8str)
+{
+    unsigned int rv;
+
+    if (INVALID_UNICODE(c32))
+    {
+        c32 = UCS_REPLACEMENT_CHARACTER;
+    }
+
+    if (c32 < 0x80)
+    {
+        rv = 1;
+        if (u8str != NULL)
+        {
+            u8str[0] = (char)c32;
+        }
+    }
+    else if (c32 < 0x800)
+    {
+        rv = 2;
+        // 11 bits. Five in first byte, six in second
+        if (u8str != NULL)
+        {
+            u8str[1] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[0] = (c32 & 0x1f) | 0xc0;
+        }
+    }
+    else if (c32 < 0xffff)
+    {
+        rv = 3;
+        // 16 bits. Four in first byte, six in second and third
+        if (u8str != NULL)
+        {
+            u8str[2] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[1] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[0] = (c32 & 0xf) | 0xe0;
+        }
+    }
+    else
+    {
+        rv = 4;
+        // 21 bits. Three in first byte, six in second, third and fourth
+        if (u8str != NULL)
+        {
+            u8str[3] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[2] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[1] = (c32 & 0x3f) | 0x80;
+            c32 >>= 6;
+            u8str[0] = (c32 & 0x7) | 0xf0;
+        }
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+unsigned int
+utf8_char_count(const char *utf8str)
+{
+    unsigned int rv = 0;
+    char32_t c;
+
+    if (utf8str != NULL)
+    {
+        while ((c = utf8_get_next_char(&utf8str, NULL)) != 0)
+        {
+            ++rv;
+        }
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+unsigned int
+utf8_as_utf16_word_count(const char *utf8str, unsigned int len)
+{
+    unsigned int rv = 0;
+    while (len > 0)
+    {
+        char32_t c = utf8_get_next_char(&utf8str, &len);
+        // Characters not in the BMP (i.e. over 0xffff) need a high/low
+        // surrogate pair
+        rv += (c >= 0x10000) ? 2 : 1;
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+int
+utf8_add_char_at(char *utf8str, unsigned int len, char32_t c32,
+                 unsigned int index)
+{
+    int rv = 0;
+
+    char c8[MAXLEN_UTF8_CHAR];
+    unsigned int c8len = utf_char32_to_utf8(c32, c8);
+
+    // Find out where to insert the character
+    char *insert_pos = utf8str;
+
+    while (index > 0 && *insert_pos != '\0')
+    {
+        utf8_get_next_char((const char **)&insert_pos, NULL);
+        --index;
+    }
+
+    // Did we get to where we need to be?
+    if (index == 0)
+    {
+        unsigned int bytes_to_move = strlen(insert_pos) + 1; // Include terminator
+        // Is there room to insert the character?
+        //
+        //  <----------- len ---------->
+        //            <--> (bytes_to_move)
+        // +----------------------------+
+        // |ABCDEFGHIJLMN\0             |
+        // +----------------------------+
+        //  ^         ^
+        //  +-utf8str +-insert_pos
+        //
+        if ((insert_pos - utf8str) + bytes_to_move + c8len <= len)
+        {
+            memmove(insert_pos + c8len, insert_pos, bytes_to_move);
+            memcpy(insert_pos, c8, c8len);
+            rv = 1;
+        }
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+char32_t
+utf8_remove_char_at(char *utf8str, unsigned int index)
+{
+    int rv = 0;
+
+    // Find out where to remove the character
+    char *remove_pos = utf8str;
+
+    while (index > 0)
+    {
+        // Any characters left in string?
+        if (*remove_pos == '\0')
+        {
+            break;
+        }
+
+        utf8_get_next_char((const char **)&remove_pos, NULL);
+        --index;
+    }
+
+    // Did we get to where we need to be?
+    if (index == 0)
+    {
+        // Find the position after the character
+        char *after_pos = remove_pos;
+        rv = utf8_get_next_char((const char **)&after_pos, NULL);
+
+        // Move everything up
+        memmove(remove_pos, after_pos, strlen(after_pos) + 1);
+    }
+
+    return rv;
+}

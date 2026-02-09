@@ -154,7 +154,8 @@ read_bitmap(char *file_name, int *width, int *height, int *bpp, char *bmp_data)
     return 0;
 }
 
-int out_params(void)
+static int
+out_params(void)
 {
     printf("rfxencode: a RemoteFX encoder testing program.\n");
     printf("  -i <in file name> bmp file\n");
@@ -165,12 +166,13 @@ int out_params(void)
     return 0;
 }
 
-int process(void)
+static int
+process(void)
 {
     char *out_data;
     char *bmp_data;
     int out_fd;
-    int out_bytes;
+    int out_bytes = 0;
     int error;
     int index;
     int index_x;

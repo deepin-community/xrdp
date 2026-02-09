@@ -27,35 +27,22 @@
 #ifndef SESMAN_H
 #define SESMAN_H
 
-#include "arch.h"
-#include "parse.h"
-#include "os_calls.h"
-#include "log.h"
-#include "env.h"
-#include "auth.h"
-#include "config.h"
-#include "sig.h"
-#include "session.h"
-#include "access.h"
-#include "scp.h"
-
-#include "libscp.h"
+struct config_sesman;
+struct trans;
 
 /* Globals */
 extern struct config_sesman *g_cfg;
-extern unsigned char g_fixedkey[8];
-extern tintptr g_term_event;
-extern tintptr g_sigchld_event;
-extern tintptr g_reload_event;
 
-/*
+/**
  * Close all file descriptors used by sesman.
  *
  * This is generally used after forking, to make sure the
  * file descriptors used by the main process are not disturbed
  *
- * This call will also release all trans and SCP_SESSION objects
- * held by sesman
+ * This call will also :-
+ * - release all trans objects held by sesman
+ * - Delete sesman wait objects
+ * - Call sesman_delete_listening_transport()
  */
 int
 sesman_close_all(void);
@@ -75,5 +62,29 @@ sesman_delete_listening_transport(void);
  */
 int
 sesman_create_listening_transport(const struct config_sesman *cfg);
+
+/**
+ * Callback to process incoming SCP data
+ */
+int
+sesman_scp_data_in(struct trans *self);
+
+/**
+ * Callback to process incoming EICP data
+ */
+int
+sesman_eicp_data_in(struct trans *self);
+
+/**
+ * Callback to process incoming ERCP data
+ */
+int
+sesman_ercp_data_in(struct trans *self);
+
+/*
+ * Check for termination
+ */
+int
+sesman_is_term(void);
 
 #endif

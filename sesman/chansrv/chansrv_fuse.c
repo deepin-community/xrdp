@@ -202,7 +202,7 @@ struct state_lookup
 {
     fuse_req_t        req;        /* Original FUSE request from lookup  */
     fuse_ino_t        pinum;      /* inum of parent directory           */
-    char              name[XFS_MAXFILENAMELEN];
+    char              name[XFS_MAXFILENAMELEN + 1];
     /* Name to look up                    */
     fuse_ino_t        existing_inum;
     /* inum of an existing entry          */
@@ -241,7 +241,7 @@ struct state_create
     fuse_req_t        req;        /* Original FUSE request from lookup  */
     struct fuse_file_info fi;     /* File info struct passed to open    */
     fuse_ino_t        pinum;      /* inum of parent directory           */
-    char              name[XFS_MAXFILENAMELEN];
+    char              name[XFS_MAXFILENAMELEN + 1];
     /* Name of file in parent directory   */
     mode_t            mode;       /* Mode of file to create             */
 };
@@ -280,7 +280,7 @@ struct state_rename
     fuse_req_t        req;        /* Original FUSE request from lookup  */
     fuse_ino_t        pinum;      /* inum of parent of file             */
     fuse_ino_t        new_pinum;  /* inum of new parent of file         */
-    char              name[XFS_MAXFILENAMELEN];
+    char              name[XFS_MAXFILENAMELEN + 1];
     /* New name of file in new parent dir */
 };
 
@@ -516,8 +516,12 @@ xfuse_init(void)
     {
         /* mount_name is relative to $HOME, e.g. ~/xrdp_client,
          * or ~/thinclient_drives */
-        g_snprintf(g_fuse_root_path, sizeof(g_fuse_root_path), "%s/%s",
-                   g_getenv("HOME"), g_cfg->fuse_mount_name);
+        unsigned int len = g_snprintf(g_fuse_root_path, sizeof(g_fuse_root_path), "%s/", g_getenv("HOME"));
+        if (len < sizeof(g_fuse_root_path))
+        {
+            format_user_info(g_fuse_root_path + len, sizeof(g_fuse_root_path) - len, g_cfg->fuse_mount_name);
+        }
+
     }
 
     /* Remove all trailing '/' from the root path */
@@ -536,10 +540,25 @@ xfuse_init(void)
         return -1;
     }
 
-    g_snprintf(g_fuse_clipboard_path, 255, "%s/.clipboard", g_fuse_root_path);
+    g_snprintf(g_fuse_clipboard_path, sizeof(g_fuse_clipboard_path),
+               "%s/.clipboard", g_fuse_root_path);
+
+    /* if FUSE mount point does not exist, create it */
+    if (!g_directory_exist(g_fuse_root_path))
+    {
+        (void)g_create_path(g_fuse_root_path);
+        if (!g_create_dir(g_fuse_root_path))
+        {
+            LOG(LOG_LEVEL_ERROR, "mkdir %s failed (%s)",
+                g_fuse_root_path, g_get_strerror());
+            return -1;
+        }
+    }
 
     /* Get the characteristics of the parent directory of the FUSE mount
      * point. Used by xfuse_path_in_xfuse_fs() */
+    g_fuse_root_parent_dev = -1;
+    g_fuse_root_parent_ino = -1;
     p = (char *)g_strrchr(g_fuse_root_path, '/');
     if (p != NULL)
     {
@@ -550,11 +569,6 @@ xfuse_init(void)
         g_fuse_root_parent_ino = g_file_get_inode_num(g_fuse_root_path);
         *p = '/';
     }
-    else
-    {
-        g_fuse_root_parent_dev = -1;
-        g_fuse_root_parent_ino = -1;
-    }
 
     if (g_fuse_root_parent_dev == -1 || g_fuse_root_parent_ino == -1)
     {
@@ -562,18 +576,6 @@ xfuse_init(void)
             "Unable to obtain characteristics of directory containing %s",
             g_fuse_root_path);
         return -1;
-    }
-
-    /* if FUSE mount point does not exist, create it */
-    if (!g_directory_exist(g_fuse_root_path))
-    {
-        (void)g_create_path(g_fuse_root_path);
-        if (!g_create_dir(g_fuse_root_path))
-        {
-            LOG(LOG_LEVEL_ERROR, "mkdir %s failed. If %s is already mounted, you must "
-                "first unmount it", g_fuse_root_path, g_fuse_root_path);
-            return -1;
-        }
     }
 
     /* setup xrdp file system */
@@ -671,7 +673,7 @@ int xfuse_check_wait_objs(void)
         return 0;
     }
 
-    if (g_tcp_select(g_fd, 0) & 1)
+    if (g_sck_can_recv(g_fd, 0))
     {
         tmpch = g_ch;
 
@@ -902,14 +904,16 @@ static int xfuse_init_lib(struct fuse_args *args)
 {
     if (fuse_parse_cmdline(args, &g_mount_point, 0, 0) < 0)
     {
-        LOG_DEVEL(LOG_LEVEL_ERROR, "fuse_parse_cmdline() failed");
+        LOG(LOG_LEVEL_ERROR, "fuse_parse_cmdline() failed");
         fuse_opt_free_args(args);
         return -1;
     }
 
     if ((g_ch = fuse_mount(g_mount_point, args)) == 0)
     {
-        LOG_DEVEL(LOG_LEVEL_ERROR, "fuse_mount() failed");
+        LOG(LOG_LEVEL_ERROR, "FUSE mount on %s failed."
+            " If %s is already mounted, you must first unmount it",
+            g_mount_point, g_mount_point);
         fuse_opt_free_args(args);
         return -1;
     }
@@ -917,7 +921,7 @@ static int xfuse_init_lib(struct fuse_args *args)
     g_se = fuse_lowlevel_new(args, &g_xfuse_ops, sizeof(g_xfuse_ops), 0);
     if (g_se == 0)
     {
-        LOG_DEVEL(LOG_LEVEL_ERROR, "fuse_lowlevel_new() failed");
+        LOG(LOG_LEVEL_ERROR, "fuse_lowlevel_new() failed");
         fuse_unmount(g_mount_point, g_ch);
         g_ch = 0;
         fuse_opt_free_args(args);
@@ -2788,17 +2792,22 @@ static char *get_name_for_entry_in_parent(fuse_ino_t parent, const char *name)
 }
 
 /*
- * Scans a user-provided string substituting %u/%U for UID/username
+ * Scans a user-provided string substituting %u/%U/ for UID/username
+ * and %d/%D fordisplaynumber/DISPLAY
  */
 static unsigned int format_user_info(char *dest, unsigned int len,
                                      const char *format)
 {
     char uidstr[64];
     char username[64];
+    char display[64];
+    char displaynum[64];
     const struct info_string_tag map[] =
     {
         {'u', uidstr},
         {'U', username},
+        {'d', displaynum},
+        {'D', display},
         INFO_STRING_END_OF_LIST
     };
 
@@ -2808,6 +2817,19 @@ static unsigned int format_user_info(char *dest, unsigned int len,
     {
         /* Fall back to UID */
         g_strncpy(username, uidstr, sizeof(username) - 1);
+    }
+
+    if (getenv("DISPLAY") == NULL)
+    {
+        /* if environment variable is not set, set it to empty string */
+        display[0] = '\0';
+        displaynum[0] = '\0';
+    }
+    else
+    {
+        g_strncpy(display, getenv("DISPLAY"), sizeof(display) - 1);
+        g_snprintf(displaynum, sizeof(displaynum), "%d",
+                   g_get_display_num_from_display(display));
     }
 
     return g_format_info_string(dest, len, format, map);

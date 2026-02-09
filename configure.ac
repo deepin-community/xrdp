@@ -1,13 +1,15 @@
 # Process this file with autoconf to produce a configure script
 
-AC_PREREQ(2.65)
-AC_INIT([xrdp], [0.9.21.1], [xrdp-devel@googlegroups.com])
+AC_PREREQ([2.69])
+AC_INIT([xrdp], [0.10.1], [xrdp-devel@googlegroups.com])
+AC_DEFINE([VERSION_YEAR], 2024, [Copyright year])
 AC_CONFIG_HEADERS(config_ac.h:config_ac-h.in)
 AM_INIT_AUTOMAKE([1.7.2 foreign])
 AC_CONFIG_MACRO_DIR([m4])
 AC_PROG_CC
+AC_PROG_CXX
 AC_C_CONST
-AC_PROG_LIBTOOL
+LT_INIT
 
 PKG_PROG_PKG_CONFIG
 if test "x$PKG_CONFIG" = "x"; then
@@ -46,10 +48,19 @@ AM_CONDITIONAL(OPENBSD, [test "x$openbsd" = xyes])
 AM_CONDITIONAL(NETBSD, [test "x$netbsd" = xyes])
 AM_CONDITIONAL(MACOS, [test "x$macos" = xyes])
 
+AC_CHECK_SIZEOF([int])
+AC_CHECK_SIZEOF([long])
+AC_CHECK_SIZEOF([void *])
+
+# runstatedir not available for autoconf <= 2.69
+if test "x$runstatedir" = "x" ; then
+    runstatedir='${localstatedir}/run'
+fi
+
 AC_ARG_WITH([socketdir],
   [AS_HELP_STRING([--with-socketdir=DIR],
-                  [Use directory for UNIX sockets (default: /tmp/.xrdp)])],
-                  [], [with_socketdir="/tmp/.xrdp"])
+                  [Use directory for UNIX sockets for XRDP sessions (default: RUNSTATEDIR/xrdp)])],
+                  [], [with_socketdir="$runstatedir/xrdp"])
 AC_SUBST([socketdir], [$with_socketdir])
 
 AC_ARG_WITH([systemdsystemunitdir],
@@ -66,7 +77,7 @@ fi
 AM_CONDITIONAL(HAVE_SYSTEMD, [test -n "$with_systemdsystemunitdir" -a "x$with_systemdsystemunitdir" != xno ])
 
 AC_ARG_ENABLE(tests,
-              AC_HELP_STRING([--enable-tests],
+              AS_HELP_STRING([--enable-tests],
               [Ensure dependencies for the tests are installed]),
               [ensure_tests_deps=yes], [])
 AC_ARG_ENABLE(pam, AS_HELP_STRING([--enable-pam],
@@ -118,6 +129,12 @@ AC_ARG_ENABLE(neutrinordp, AS_HELP_STRING([--enable-neutrinordp],
               [Build neutrinordp module (default: no)]),
               [], [enable_neutrinordp=no])
 AM_CONDITIONAL(XRDP_NEUTRINORDP, [test x$enable_neutrinordp = xyes])
+
+AC_ARG_ENABLE(ulalaca, AS_HELP_STRING([--enable-ulalaca],
+              [Build ulalaca module (experimental) (default: no)]),
+              [], [enable_ulalaca=no])
+AM_CONDITIONAL(XRDP_ULALACA, [test x$enable_ulalaca = xyes])
+
 AC_ARG_ENABLE(jpeg, AS_HELP_STRING([--enable-jpeg],
               [Build jpeg module (default: no)]),
               [], [enable_jpeg=no])
@@ -166,7 +183,9 @@ AC_ARG_ENABLE(rdpsndaudin, AS_HELP_STRING([--enable-rdpsndaudin],
               [], [enable_rdpsndaudin=no])
 AM_CONDITIONAL(XRDP_RDPSNDAUDIN, [test x$enable_rdpsndaudin = xyes])
 
-AC_ARG_WITH(imlib2, AC_HELP_STRING([--with-imlib2=ARG], [imlib2 library to use for non-BMP backgrounds (ARG=yes/no/<abs-path>)]),,)
+AC_ARG_WITH(imlib2, AS_HELP_STRING([--with-imlib2=ARG], [imlib2 library to use for non-BMP backgrounds (ARG=yes/no/<abs-path>)]),,)
+
+AC_ARG_WITH(freetype2, AS_HELP_STRING([--with-freetype2=ARG], [freetype2 library to use for rendering fonts (ARG=yes/no/<abs-path>)]),,)
 
 # Obsolete options
 AC_ARG_ENABLE(xrdpdebug, AS_HELP_STRING([--enable-xrdpdebug],
@@ -188,6 +207,15 @@ AM_COND_IF([LINUX],
 AM_COND_IF([DEVEL_DEBUG],
   [AX_APPEND_COMPILE_FLAGS([-g -O0])],
   [AX_APPEND_COMPILE_FLAGS([-O2])])
+
+# Function setusercontext() is in BSD -lutil but N/A on Solaris or GNU systems
+AC_SEARCH_LIBS([setusercontext], [util])
+
+# Define HAVE_XXXXX macros for some system functions
+AC_CHECK_FUNCS([setusercontext getgrouplist clearenv])
+
+# The type used by getgrouplist() is the same type used by getgroups()
+AC_TYPE_GETGROUPS
 
 # Don't fail without working nasm if rfxcodec is not enabled
 if test "x$enable_rfxcodec" != xyes; then
@@ -256,34 +284,89 @@ if test x$use_imlib2 = xyes; then
     AC_DEFINE([USE_IMLIB2],1, [Compile with imlib2 support])
 fi
 
+# Find freetype2
+#
+# The modversion used by pkgcheck does not correspond to the
+# freetype2 release. See docs/VERSIONS.TXT in the freetype2
+# source for a table of correspondences. If you change one
+# of the below defines, change both.
+m4_define([FT2_REQUIRED_VERSION], [2_8_0])
+m4_define([FT2_REQUIRED_MODVERSION], [20.0.14])
+case "$with_freetype2" in
+    '' | no) AC_MSG_NOTICE([freetype2 will not be supported])
+        use_freetype2=no
+        ;;
+    yes)
+        PKG_CHECK_MODULES([FREETYPE2], [freetype2 >= FT2_REQUIRED_MODVERSION],
+            [use_freetype2=yes],
+            [AC_MSG_ERROR([please install version FT2_REQUIRED_VERSION or later of libfreetype6-dev or freetype-devel])])
+        ;;
+    /*) AC_MSG_CHECKING([for freetype2 in $with_freetype2])
+        if test -d $with_freetype2/lib; then
+            FREETYPE2_LIBS="-L$with_freetype2/lib -llibfreetype"
+        elif test -d $with_freetype2/lib64; then
+            FREETYPE2_LIBS="-L$with_freetype2/lib64 -llibfreetype"
+        else
+            AC_MSG_RESULT([no])
+            AC_MSG_ERROR([Can't find libfreetype in $with_freetype2])
+        fi
+
+        if test -f $with_freetype2/include/freetype2/ft2build.h; then
+            FREETYPE2_CFLAGS="-I $with_freetype2/include/freetype2"
+        else
+            AC_MSG_RESULT([no])
+            AC_MSG_ERROR([Can't find $with_freetype2/include/freetype2/ft2build.h])
+        fi
+        AC_MSG_RESULT([yes])
+        AC_SUBST([FREETYPE2_LIBS])
+        AC_SUBST([FREETYPE2_CFLAGS])
+        use_freetype2=yes
+        ;;
+    *)  AC_MSG_ERROR([--with-freetype2 needs yes/no or absolute path])
+esac
+AM_CONDITIONAL([USE_FREETYPE2], [test "x$use_freetype2" = xyes])
+
 # Check only one auth mechanism is specified, and give it a name
 auth_cnt=0
 auth_mech="Builtin"
+AUTHMOD_OBJ=verify_user.lo
+AUTHMOD_LIB=-lcrypt
 if test x$enable_pam = xyes
 then
   auth_cnt=`expr $auth_cnt + 1`
   auth_mech="PAM"
+  AUTHMOD_OBJ=verify_user_pam.lo
+  AUTHMOD_LIB=-lpam
 fi
 if test x$bsd = xtrue
 then
   auth_cnt=`expr $auth_cnt + 1`
   auth_mech="BSD"
+  AUTHMOD_OBJ=verify_user_bsd.lo
+  AUTHMOD_LIB=
 fi
 if test x$enable_kerberos = xyes
 then
   auth_cnt=`expr $auth_cnt + 1`
   auth_mech="Kerberos"
+  AUTHMOD_OBJ=verify_user_kerberos.lo
+  AUTHMOD_LIB=-lkrb5
 fi
 if test x$enable_pamuserpass = xyes
 then
   auth_cnt=`expr $auth_cnt + 1`
   auth_mech="PAM userpass"
+  AUTHMOD_OBJ=verify_user_pam_userpass.lo
+  AUTHMOD_LIB="-lpam -lpam_userpass"
 fi
 
 if test $auth_cnt -gt 1
 then
   AC_MSG_ERROR([--enable-pam, --enable-bsd, --enable-pamuserpass and --enable-kerberos are mutually exclusive])
 fi
+
+AC_SUBST([AUTHMOD_OBJ])
+AC_SUBST([AUTHMOD_LIB])
 
 # checking if pam should be autodetected.
 if test "x$enable_pam" = "xyes"
@@ -322,10 +405,16 @@ fi
 if test "x$enable_vsock" = "xyes"
 then
   enable_vsock=yes
-  AC_CHECK_HEADERS([linux/socket.h linux/vm_sockets.h],
-                   [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_VSOCK])],
-                   [],
-                   [#include <sys/socket.h>])
+  if test "x$freebsd" = "xyes"
+  then
+    # Determine if we have AF_HYPERV defined (FreeBSD 13+)
+    AC_CHECK_DECL([AF_HYPERV], [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_HYPERV])], [], [#include <sys/socket.h>])
+  else
+    AC_CHECK_HEADERS([linux/socket.h linux/vm_sockets.h],
+                    [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_VSOCK])],
+                    [],
+                    [#include <sys/socket.h>])
+  fi
 fi
 
 if test "x$enable_ipv6only" = "xyes"
@@ -337,11 +426,6 @@ fi
 if test "x$enable_ipv6" = "xyes"
 then
   AC_DEFINE([XRDP_ENABLE_IPV6],1,[Enable IPv6])
-fi
-
-if test "x$enable_pam" = "xyes"
-then
-  AC_DEFINE([USE_PAM],1,[Enable PAM])
 fi
 
 AS_IF( [test "x$enable_neutrinordp" = "xyes"] , [PKG_CHECK_MODULES(FREERDP, freerdp >= 1.0.0)] )
@@ -433,14 +517,22 @@ AC_CHECK_HEADER([X11/extensions/Xrandr.h], [],
 
 CFLAGS="$save_CFLAGS"
 
-# perform unit tests if libcheck found
+# perform unit tests if libcheck and libmocka found
+perform_unit_tests=yes; # Assume packages will be found
 if test "x$ensure_tests_deps" == "xyes"; then
     PKG_CHECK_MODULES([CHECK], [check >= 0.10.0],
-        [perform_unit_tests=yes],
+        [],
         [AC_MSG_ERROR([please install check, the unit test framework])])
+    # Check if cmocka is available - needed for unit testing
+    PKG_CHECK_MODULES([CMOCKA], [cmocka],
+        [],
+        [AC_MSG_ERROR([please install cmocka, the mocking framework])])
 else
     PKG_CHECK_MODULES([CHECK], [check >= 0.10.0],
-        [perform_unit_tests=yes],
+        [],
+        [perform_unit_tests=no])
+    PKG_CHECK_MODULES([CMOCKA], [cmocka],
+        [],
         [perform_unit_tests=no])
 fi
 
@@ -464,14 +556,21 @@ if test "x$enable_strict_locations" != "xyes"; then
   localstatedir="/var";
 fi
 
+AC_ARG_WITH([pamconfdir],
+  [AS_HELP_STRING([--with-pamconfdir=DIR],
+                  [Use directory for pam.d config (default: /etc/pam.d)])],
+                  [], [with_pamconfdir="$sysconfdir/pam.d"])
+AC_SUBST([pamconfdir], [$with_pamconfdir])
+
 PKG_INSTALLDIR
 
-AC_CHECK_HEADERS([sys/prctl.h])
+AC_CHECK_HEADERS([sys/prctl.h uchar.h])
 
 AC_CONFIG_FILES([
   common/Makefile
   docs/Makefile
   docs/man/Makefile
+  fontutils/Makefile
   genkeymap/Makefile
   instfiles/default/Makefile
   instfiles/init.d/Makefile
@@ -480,19 +579,24 @@ AC_CONFIG_FILES([
   instfiles/pulse/Makefile
   instfiles/rc.d/Makefile
   keygen/Makefile
+  waitforx/Makefile
+  libipm/Makefile
   libxrdp/Makefile
   Makefile
   mc/Makefile
   neutrinordp/Makefile
+  ulalaca/Makefile
   pkgconfig/Makefile
   pkgconfig/xrdp.pc
   pkgconfig/xrdp-uninstalled.pc
+  sesman/libsesman/Makefile
   sesman/chansrv/Makefile
-  sesman/libscp/Makefile
   sesman/Makefile
+  sesman/sesexec/Makefile
   sesman/tools/Makefile
   tests/Makefile
   tests/common/Makefile
+  tests/libipm/Makefile
   tests/libxrdp/Makefile
   tests/memtest/Makefile
   tests/xrdp/Makefile
@@ -504,6 +608,8 @@ AC_CONFIG_FILES([
   xrdp/Makefile
   xrdpvr/Makefile
   xup/Makefile
+  third_party/Makefile
+  third_party/tomlc99/Makefile
 ])
 
 AC_REQUIRE_AUX_FILE([tap-driver.sh])
@@ -527,11 +633,9 @@ echo "  vsock                   $enable_vsock"
 echo "  auth mechanism          $auth_mech"
 echo "  rdpsndaudin             $enable_rdpsndaudin"
 echo
-if test x$use_imlib2 = xyes; then
-    echo "  with imlib2             yes"
-else
-    echo "  with imlib2             no"
-fi
+echo "  with imlib2             $use_imlib2"
+echo "  with freetype2          $use_freetype2"
+
 echo
 echo "  development logging     $devel_logging"
 echo "  development streamcheck $devel_streamcheck"
@@ -542,6 +646,10 @@ echo "  exec_prefix             $exec_prefix"
 echo "  libdir                  $libdir"
 echo "  bindir                  $bindir"
 echo "  sysconfdir              $sysconfdir"
+echo "  pamconfdir              $pamconfdir"
+echo "  localstatedir           $localstatedir"
+echo "  runstatedir             $runstatedir"
+echo "  socketdir               $socketdir"
 echo ""
 echo "  unit tests performable  $perform_unit_tests"
 echo ""
@@ -552,4 +660,3 @@ echo "  LDFLAGS = $LDFLAGS"
 echo '#define XRDP_CONFIGURE_OPTIONS \' > ./xrdp_configure_options.h
 ./config.status --config | xargs -n 1 | sed -e 's/^/"      /' -e 's/$/\\n" \\/' >> ./xrdp_configure_options.h
 echo '""' >> ./xrdp_configure_options.h
-

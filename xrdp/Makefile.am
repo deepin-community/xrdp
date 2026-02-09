@@ -9,11 +9,13 @@ AM_CPPFLAGS = \
   -DXRDP_SHARE_PATH=\"${datadir}/xrdp\" \
   -DXRDP_PID_PATH=\"${localstatedir}/run\" \
   -DXRDP_MODULE_PATH=\"${moduledir}\" \
-  -DXRDP_SOCKET_PATH=\"${socketdir}\" \
+  -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
   -I$(top_builddir) \
   -I$(top_srcdir)/common \
-  -I$(top_srcdir)/sesman/libscp \
+  -I$(top_srcdir)/libipm \
   -I$(top_srcdir)/libxrdp \
+  -I$(top_srcdir)/third_party \
+  -I$(top_srcdir)/third_party/tomlc99 \
   $(IMLIB2_CFLAGS)
 
 XRDP_EXTRA_LIBS =
@@ -58,12 +60,16 @@ xrdp_SOURCES = \
   xrdp_process.c \
   xrdp_region.c \
   xrdp_types.h \
-  xrdp_wm.c
+  xrdp_egfx.c \
+  xrdp_egfx.h \
+  xrdp_wm.c \
+  xrdp_main_utils.c
 
 xrdp_LDADD = \
   $(top_builddir)/common/libcommon.la \
-  $(top_builddir)/sesman/libscp/libscp.la \
+  $(top_builddir)/libipm/libipm.la \
   $(top_builddir)/libxrdp/libxrdp.la \
+  $(top_builddir)/third_party/tomlc99/libtoml.la \
   $(IMLIB2_LIBS) \
   $(XRDP_EXTRA_LIBS)
 
@@ -98,6 +104,9 @@ dist_xrdppkgdata_DATA = \
   xrdp24b.bmp \
   xrdp256.bmp \
   xrdp_logo.bmp \
+  xrdp_logo.png \
+  README.logo \
   sans-10.fv1 \
+  sans-18.fv1 \
   cursor0.cur \
   cursor1.cur

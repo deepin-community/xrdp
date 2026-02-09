@@ -124,13 +124,6 @@ g_set_term(int in_val)
 
 /*****************************************************************************/
 tbus
-g_get_term_event(void)
-{
-    return g_term_event;
-}
-
-/*****************************************************************************/
-tbus
 g_get_sync_event(void)
 {
     return g_sync_event;
@@ -221,7 +214,7 @@ MyServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
     //  int fd;
     //  char text[256];
 
-    //  fd = g_file_open("c:\\temp\\xrdp\\log.txt");
+    //  fd = g_file_open_rw("c:\\temp\\xrdp\\log.txt");
     //  g_file_write(fd, "hi\r\n", 4);
     //event_han = RegisterEventSource(0, "xrdp");
     //log_event(event_han, "hi xrdp log");
@@ -315,23 +308,17 @@ main(int argc, char **argv)
         }
 
     /* check long, int and void* sizes */
-    if (sizeof(int) != 4)
-    {
-        g_writeln("unusable int size, must be 4");
-        return 0;
-    }
+#if SIZEOF_INT != 4
+#   error unusable int size, must be 4
+#endif
 
-    if (sizeof(long) != sizeof(void *))
-    {
-        g_writeln("long size must match void* size");
-        return 0;
-    }
+#if SIZEOF_LONG != SIZEOF_VOID_P
+#   error sizeof(long) must match sizeof(void*)
+#endif
 
-    if (sizeof(long) != 4 && sizeof(long) != 8)
-    {
-        g_writeln("unusable long size, must be 4 or 8");
-        return 0;
-    }
+#if SIZEOF_LONG != 4 && SIZEOF_LONG != 8
+#   error sizeof(long), must be 4 or 8
+#endif
 
     if (sizeof(tui64) != 8)
     {
@@ -465,7 +452,7 @@ main(int argc, char **argv)
 
             if (g_file_exist(pid_file)) /* xrdp.pid */
             {
-                fd = g_file_open(pid_file); /* xrdp.pid */
+                fd = g_file_open_ro(pid_file); /* xrdp.pid */
             }
 
             if (fd == -1)
@@ -552,7 +539,7 @@ main(int argc, char **argv)
     if (!no_daemon)
     {
         /* make sure we can write to pid file */
-        fd = g_file_open(pid_file); /* xrdp.pid */
+        fd = g_file_open_rw(pid_file); /* xrdp.pid */
 
         if (fd == -1)
         {
@@ -592,9 +579,9 @@ main(int argc, char **argv)
         g_file_close(0);
         g_file_close(1);
         g_file_close(2);
-        g_file_open("/dev/null");
-        g_file_open("/dev/null");
-        g_file_open("/dev/null");
+        g_file_open_rw("/dev/null");
+        g_file_open_rw("/dev/null");
+        g_file_open_rw("/dev/null");
         /* end of daemonizing code */
     }
 
@@ -602,7 +589,7 @@ main(int argc, char **argv)
     {
         /* write the pid to file */
         pid = g_getpid();
-        fd = g_file_open(pid_file); /* xrdp.pid */
+        fd = g_file_open_rw(pid_file); /* xrdp.pid */
 
         if (fd == -1)
         {

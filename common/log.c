@@ -20,6 +20,7 @@
 #include <config_ac.h>
 #endif
 
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -27,6 +28,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 #include "list.h"
 #include "file.h"
 #include "os_calls.h"
@@ -60,16 +62,21 @@ internal_log_file_open(const char *fname)
 
     if (fname != NULL)
     {
-        ret = open(fname, O_WRONLY | O_CREAT | O_APPEND | O_SYNC,
-                   S_IRUSR | S_IWUSR);
+        if (g_strcmp(fname, "<stdout>") != 0)
+        {
+            ret = open(fname, O_WRONLY | O_CREAT | O_APPEND | O_SYNC,
+                       S_IRUSR | S_IWUSR);
+        }
+        else
+        {
+            ret = dup(1);
+        }
     }
 
-#ifdef FD_CLOEXEC
     if (ret != -1)
     {
-        fcntl(ret, F_SETFD, FD_CLOEXEC);
+        g_file_set_cloexec(ret, 1);
     }
-#endif
 
     return ret;
 }
@@ -320,7 +327,7 @@ internal_config_read_logging(int file,
 
             if (lc->log_file != NULL)
             {
-                if (lc->log_file[0] != '/')
+                if (lc->log_file[0] != '/' && g_strcmp(lc->log_file, "<stdout>") != 0)
                 {
                     temp_buf = (char *)g_malloc(512, 0);
                     g_snprintf(temp_buf, 511, "%s/%s", XRDP_LOG_PATH, lc->log_file);
@@ -682,7 +689,7 @@ log_config_init_from_config(const char *iniFilename,
         return NULL;
     }
 
-    fd = g_file_open_ex(iniFilename, 1, 0, 0, 0);
+    fd = g_file_open_ro(iniFilename);
 
     if (-1 == fd)
     {
@@ -1010,12 +1017,10 @@ internal_log_message(const enum logLevels lvl,
                      const char *msg,
                      va_list ap)
 {
-    char buff[LOG_BUFFER_SIZE + 31]; /* 19 (datetime) 4 (space+cr+lf+\0) */
+    char buff[LOG_BUFFER_SIZE + 43]; /* 31 ("[2022-10-07T19:58:33.065+0900] ") + 8 (log level) + 4 (space+cr+lf+\0) */
     int len = 0;
     enum logReturns rv = LOG_STARTUP_OK;
     int writereply = 0;
-    time_t now_t;
-    struct tm *now;
 
     if (g_staticLogConfig == NULL)
     {
@@ -1035,20 +1040,18 @@ internal_log_message(const enum logLevels lvl,
         return LOG_STARTUP_OK;
     }
 
-    now_t = time(&now_t);
-    now = localtime(&now_t);
+    getFormattedDateTime(buff, 32);
 
-    strftime(buff, 21, "[%Y%m%d-%H:%M:%S] ", now);
-
-    internal_log_lvl2str(lvl, buff + 20);
+    internal_log_lvl2str(lvl, buff + 31);
 
     if (g_staticLogConfig->enable_pid)
     {
-        g_snprintf(buff + 28, LOG_BUFFER_SIZE, "[pid:%d tid:%lld] ",
+        /* 31 (datetime) + 8 (log level) = 39 */
+        g_snprintf(buff + 39, LOG_BUFFER_SIZE, "[pid:%d tid:%lld] ",
                    g_getpid(), (long long) tc_get_threadid());
-        len = g_strlen(buff + 28);
+        len = g_strlen(buff + 39);
     }
-    len += vsnprintf(buff + 28 + len, LOG_BUFFER_SIZE - len, msg, ap);
+    len += vsnprintf(buff + 39 + len, LOG_BUFFER_SIZE - len, msg, ap);
 
     /* checking for truncated messages */
     if (len > LOG_BUFFER_SIZE)
@@ -1058,17 +1061,18 @@ internal_log_message(const enum logLevels lvl,
     }
 
     /* forcing the end of message string */
+    /* 31 (datetime) + 8 (log level) = 39 */
 #ifdef _WIN32
-    buff[len + 28] = '\r';
-    buff[len + 29] = '\n';
-    buff[len + 30] = '\0';
+    buff[len + 39] = '\r';
+    buff[len + 40] = '\n';
+    buff[len + 41] = '\0';
 #else
 #ifdef _MACOS
-    buff[len + 28] = '\r';
-    buff[len + 29] = '\0';
+    buff[len + 39] = '\r';
+    buff[len + 40] = '\0';
 #else
-    buff[len + 28] = '\n';
-    buff[len + 29] = '\0';
+    buff[len + 39] = '\n';
+    buff[len + 40] = '\0';
 #endif
 #endif
 
@@ -1078,7 +1082,7 @@ internal_log_message(const enum logLevels lvl,
     {
         /* log to syslog*/
         /* %s fix compiler warning 'not a string literal' */
-        syslog(internal_log_xrdp2syslog(lvl), "%s", buff + 20);
+        syslog(internal_log_xrdp2syslog(lvl), "%s", buff + 31);
     }
 
     if (g_staticLogConfig->enable_console
@@ -1140,3 +1144,56 @@ getLogFile(char *replybuf, int bufsize)
 
     return replybuf;
 }
+
+/**
+ * Returns formatted datetime for log
+ * @return
+ */
+char *
+getFormattedDateTime(char *replybuf, int bufsize)
+{
+    char buf_datetime[21]; /* 2022-10-07T16:36:04 + . */
+    char buf_millisec[4];  /* 357 */
+    char buf_timezone[6];  /* +0900 */
+
+    struct tm *now;
+    struct timeval tv;
+    int millisec;
+
+    gettimeofday(&tv, NULL);
+    now = localtime(&tv.tv_sec);
+
+    millisec = (tv.tv_usec + 500 / 1000);
+    g_snprintf(buf_millisec, sizeof(buf_millisec), "%03d", millisec);
+
+    strftime(buf_datetime, sizeof(buf_datetime), "%FT%T.", now);
+    strftime(buf_timezone, sizeof(buf_timezone), "%z", now);
+    g_snprintf(replybuf, bufsize, "[%s%s%s] ", buf_datetime, buf_millisec, buf_timezone);
+
+    return replybuf;
+}
+
+/*****************************************************************************/
+#ifdef USE_DEVEL_LOGGING
+void
+log_devel_leaking_fds(const char *exe, int min, int max)
+{
+    struct list *fd_list = g_get_open_fds(min, max);
+
+    if (fd_list != NULL)
+    {
+        int i;
+        for (i = 0 ; i < fd_list->count ; ++i)
+        {
+            int fd = (int)fd_list->items[i];
+            if (g_file_get_cloexec(fd) == 0)
+            {
+                LOG_DEVEL(LOG_LEVEL_WARNING,
+                          "File descriptor %d is not CLOEXEC when running %s",
+                          fd, exe);
+            }
+        }
+    }
+}
+#endif // USE_DEVEL_LOGGING
+

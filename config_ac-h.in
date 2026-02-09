@@ -3,11 +3,21 @@
 /* Allow sources to check config_ac.h is included */
 #undef CONFIG_AC_H
 
+/* Define to the type of elements in the array argument to 'getgroups'.
+   Usually this is either 'int' or 'gid_t'. */
+#undef GETGROUPS_T
+
+/* Define to 1 if you have the 'clearenv' function. */
+#undef HAVE_CLEARENV
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
 /* Define to 1 if the system has the `format' function attribute */
 #undef HAVE_FUNC_ATTRIBUTE_FORMAT
+
+/* Define to 1 if you have the 'getgrouplist' function. */
+#undef HAVE_GETGROUPLIST
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
@@ -20,6 +30,9 @@
 
 /* Using OpenPAM */
 #undef HAVE_PAM_CONSTANTS_H
+
+/* Define to 1 if you have the 'setusercontext' function. */
+#undef HAVE_SETUSERCONTEXT
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H
@@ -44,6 +57,9 @@
 
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
+
+/* Define to 1 if you have the <uchar.h> header file. */
+#undef HAVE_UCHAR_H
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
@@ -75,7 +91,16 @@
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
-/* Define to 1 if all of the C90 standard headers exist (not just the ones
+/* The size of 'int', as computed by sizeof. */
+#undef SIZEOF_INT
+
+/* The size of 'long', as computed by sizeof. */
+#undef SIZEOF_LONG
+
+/* The size of 'void *', as computed by sizeof. */
+#undef SIZEOF_VOID_P
+
+/* Define to 1 if all of the C89 standard headers exist (not just the ones
    required in a freestanding environment). This macro is provided for
    backward compatibility; new code need not use it. */
 #undef STDC_HEADERS
@@ -89,11 +114,11 @@
 /* Compile with imlib2 support */
 #undef USE_IMLIB2
 
-/* Enable PAM */
-#undef USE_PAM
-
 /* Version number of package */
 #undef VERSION
+
+/* Copyright year */
+#undef VERSION_YEAR
 
 /* Enable IPv6 */
 #undef XRDP_ENABLE_IPV6
@@ -107,8 +132,14 @@
 /* Define to 1 if the X Window System is missing or not being used. */
 #undef X_DISPLAY_MISSING
 
-/* Define to empty if `const' does not conform to ANSI C. */
+/* Define to empty if 'const' does not conform to ANSI C. */
 #undef const
+
+/* Define as 'int' if <sys/types.h> doesn't define. */
+#undef gid_t
 
 /* Substitute for socklen_t */
 #undef socklen_t
+
+/* Define as 'int' if <sys/types.h> doesn't define. */
+#undef uid_t

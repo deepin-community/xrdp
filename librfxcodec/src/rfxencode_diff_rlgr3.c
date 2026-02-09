@@ -32,72 +32,12 @@
 #include <string.h>
 
 #include "rfxcommon.h"
-
-#define PIXELS_IN_TILE 4096
-
-/* Constants used within the RLGR1/RLGR3 algorithm */
-#define KPMAX   (80)  /* max value for kp or krp */
-#define LSGR    (3)   /* shift count to convert kp to k */
-#define UP_GR   (4)   /* increase in kp after a zero run in RL mode */
-#define DN_GR   (6)   /* decrease in kp after a nonzero symbol in RL mode */
-#define UQ_GR   (3)   /* increase in kp after nonzero symbol in GR mode */
-#define DQ_GR   (3)   /* decrease in kp after zero symbol in GR mode */
-
-#define GetNextInput do { \
-    input = *coef; \
-    coef++; \
-    coef_size--; \
-} while (0)
-
-#define CheckWrite do { \
-    while (bit_count >= 8) \
-    { \
-        bit_count -= 8; \
-        *cdata = bits >> bit_count; \
-        cdata++; \
-    } \
-} while (0)
-
-/* output GR code for (mag - 1) */
-#define CodeGR(_krp, _lmag) do { \
-    int lkr = _krp >> LSGR; \
-    /* unary part of GR code */ \
-    int lvk = _lmag >> lkr; \
-    int llvk = lvk; \
-    while (llvk >= 8) \
-    { \
-        bits <<= 8; \
-        bits |= 0xFF; \
-        llvk -= 8; \
-        *cdata = bits >> bit_count; \
-        cdata++; \
-    } \
-    bits <<= llvk; \
-    bits |= (1 << llvk) - 1; \
-    bit_count += llvk; \
-    bits <<= 1; \
-    bit_count++; \
-    CheckWrite; \
-    /* remainder part of GR code, if needed */ \
-    if (lkr) \
-    { \
-        bits <<= lkr; \
-        bits |= _lmag & ((1 << lkr) - 1); \
-        bit_count += lkr; \
-    } \
-    /* update _krp, only if it is not equal to 1 */ \
-    if (lvk == 0) \
-    { \
-        _krp = MAX(0, _krp - 2); \
-    } \
-    else if (lvk > 1) \
-    { \
-        _krp = MIN(KPMAX, _krp + lvk); \
-    } \
-} while (0)
+#include "rfxencode_diff_rlgr3.h"
+#include "rfxencode_diff_rlgr_common.h"
 
 int
-rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
+rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size,
+                      int diff_bytes)
 {
     int k;
     int kp;
@@ -122,8 +62,8 @@ rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
     uint32 sum2Ms;
     uint32 nIdx;
 
-    /* the last 64 bytes are diff */
-    for (k = PIXELS_IN_TILE - 1; k > PIXELS_IN_TILE - 64; k--)
+    /* the last x bytes are diff */
+    for (k = PIXELS_IN_TILE - 1; k > PIXELS_IN_TILE - diff_bytes; k--)
     {
         coef[k] -= coef[k - 1];
     }
@@ -150,9 +90,13 @@ rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
             numZeros = 0;
 
             GetNextInput;
-            while (input == 0 && coef_size > 0)
+            while (input == 0)
             {
                 numZeros++;
+                if (coef_size < 1)
+                {
+                    break;
+                }
                 GetNextInput;
             }
 
@@ -186,6 +130,11 @@ rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
 
             CheckWrite;
 
+            if (input == 0)
+            {
+                continue;
+            }
+
             /* encode the nonzero value using GR coding */
             if (input < 0)
             {
@@ -202,7 +151,7 @@ rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
             bits |= sign;
             bit_count++;
 
-            lmag = mag ? mag - 1 : 0;
+            lmag = mag - 1;
 
             CodeGR(krp, lmag); /* output GR code for (mag - 1) */
             CheckWrite;
@@ -276,10 +225,13 @@ rfx_encode_diff_rlgr3(sint16 *coef, uint8 *cdata, int cdata_size)
 
     if (bit_count > 0)
     {
+        if (cdata_size < 1)
+        {
+            return -1;
+        }
         bits <<= 8 - bit_count;
         *cdata = bits;
         cdata++;
-        bit_count = 0;
     }
 
     processed_size = cdata - cdata_org;

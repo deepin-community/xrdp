@@ -25,10 +25,6 @@ Session management
 Access control
 
 .TP
-\fB[X11rdp]\fR, \fB[Xvnc]\fR, \fB[Xorg]\fR
-X11 server settings for supported servers
-
-.TP
 \fB[Chansrv]\fR
 Settings for xrdp-chansrv(8)
 
@@ -50,13 +46,19 @@ outside their proper section will be \fIignored\fR.
 Following parameters can be used in the \fB[Globals]\fR section.
 
 .TP
-\fBListenAddress\fR=\fIip address\fR
-xrdp-sesman listening address. If not specified, defaults to \fI0.0.0.0\fR
-(all interfaces).
-
-.TP
-\fBListenPort\fR=\fIport number\fR
-xrdp-sesman listening port. If not specified, defaults to \fI3350\fR.
+\fBListenPort\fR=\fIpath-to-socket\fR
+UNIX domain socket for xrdp-sesman(8) to listen on.
+.PP
+.RS
+The default value of this setting is 'sesman.socket'.
+.PP
+An absolute path can be specified by starting this parameter with a '/'.
+In this instance, the system administrator is responsible for ensuring
+the socket can only be created by a suitably privileged process.
+.PP
+If the parameter does not start with a '/', a name within
+@socketdir@ is used.
+.RE
 
 .TP
 \fBEnableUserWindowManager\fR=\fI[true|false]\fR
@@ -91,7 +93,10 @@ sections.
 .TP
 \fBLogFile\fR=\fIfilename\fR
 Log file path. It can be either absolute or relative. If not specified,
-defaults to \fI./sesman.log\fR It is ignored in the [ChansrvLogging] section
+defaults to \fI./sesman.log\fR. If set to \fB<stdout>\fR, log will go to
+stdout. Use for debugging only\fR
+
+It is ignored in the [ChansrvLogging] section
 since the channel server creates one log file per display and instead uses the
 following log file naming convention \fIxrdp-chansrv.${DISPLAY}.log\fR
 
@@ -151,6 +156,13 @@ Sets the maximum number of simultaneous sessions. If not set or set to
 \fI0\fR, unlimited session are allowed.
 
 .TP
+\fBMaxDisplayNumber\fR=\fInumber\fR
+Sets the maximum number which can be assigned to an X11 $DISPLAY. The
+default is compatible with IANA TCP port allocations. If you are not
+allowing TCP connections to your X servers you may safely increase this
+number.
+
+.TP
 \fBKillDisconnected\fR=\fI[true|false]\fR
 If set to \fB1\fR, \fBtrue\fR or \fByes\fR, every session will be killed
 within \fBDisconnectedTimeLimit\fR seconds after the user disconnects.
@@ -170,30 +182,34 @@ If set to \fI0\fR, idle sessions will never be disconnected by timeout.
 This works only with xorgxrdp sessions. Moreover, xorgxrdp must be v0.2.9 or later.
 
 .TP
-\fBPolicy\fR=\fI[Default|UBD|UBI|UBC|UBDI|UBDC]\fR
+\fBPolicy\fR=\fI[Default|Separate|{UBDI}]\fR
 Session allocation policy. Used to decide when to allocate a
 new session. Set to one of the following values:
 .br
 
-.br
-\fBDefault\fR - session per <User,BitPerPixel>
-.br
-\fBUBD\fR - session per <User,BitPerPixel,DisplaySize>
-.br
-\fBUBI\fR - session per <User,BitPerPixel,IPAddr>
-.br
-\fBUBC\fR - session per <User,BitPerPixel,Connection>
-.br
-\fBUBDI\fR - session per <User,BitPerPixel,DisplaySize,IPAddr>
-.br
-\fBUBDC\fR - session per <User,BitPerPixel,DisplaySize,Connection>
-.br
+.RS
+.HP 12
+\fBDefault\fR -   Currently the same as "UB" for all session types
+.HP 12
+\fBSeparate\fR -  All sessions are separate. Sessions can never be rejoined,
+and will need to be cleaned up manually, or automatically by setting other
+sesman options.
+.P
+Alternatively combine one-or-more of the following options
+.HP 4
+\fBU\fR - Sessions are separated per user
+.HP 4
+\fBB\fR - Sessions are separated by bits-per-pixel
+.HP 4
+\fBD\fR - Sessions are separated by initial display size
+.HP 4
+\fBI\fR - Sessions are separated by IP address
+.RE
 
-.br
-Note that the \fBUser\fR and \fBBitPerPixel\fR criteria cannot be turned
+.IP
+Note that the \fBU\fR and \fBB\fR criteria cannot be turned
 off. \fBDisplaySize\fR refers to the initial geometry of a connection,
 as actual display sizes can change dynamically.
-.br
 
 .SH "SECURITY"
 Following parameters can be used in the \fB[Security]\fR section.
@@ -283,8 +299,26 @@ To keep compatibility, the following aliases are also available.
 If set to \fB1\fR, \fBtrue\fR or \fByes\fR, require group membership even
 if the group specified in \fBTerminalServerUsers\fR doesn't exist.
 
+.TP
+\fBAllowAlternateShell\fR=\fI[true|false]\fR
+If set to \fB0\fR, \fBfalse\fR or \fBno\fR, prevent usage of alternate shells by users.
+
+.TP
+\fBXorgNoNewPrivileges\fR=\fI[true|false]\fR
+Only applicable on Linux. If set to \fB0\fR, \fBfalse\fR or \fBno\fR, do
+not use the kernel's \fIno_new_privs\fR restriction when invoking the Xorg
+X11 server. The use of \fIno_new_privs\fR is intended to prevent issues due
+to a setuid Xorg executable. However, if a kernel security module (such as
+AppArmor) is used to confine xrdp, \fIno_new_privs\fR may interfere with
+transitions between confinement domains.
+
+.TP
+\fBSessionSockdirGroup\fR=\fIgroup\fR
+Sets the group owner of the directories containing session sockets. This
+is normally the GID of the xrdp process so xrdp can connect to user sessions.
+
 .SH "X11 SERVER"
-Following parameters can be used in the \fB[X11rdp]\fR, \fB[Xvnc]\fR and
+Following parameters can be used in the \fB[Xvnc]\fR and
 \fB[Xorg]\fR sections.
 
 .TP
@@ -303,13 +337,12 @@ Created if it doesn't exist. If not specified, defaults to \fIxrdp_client\fR.
 If first character is not a '/', this is relative to $HOME.
 .P
 .RS
-If first character is a '/' this is an absolute path. The following
-substitutions are made in this string:-
+The following substitutions are made in this string:-
     %U - Username
     %u - Numeric UID
+    %d - Numeric display number (ex 10)
+    %D - Display environment variable (ex :10.0)
     %% - Percent character
-.P
-If this format is used:-
 .HP 3
 1) The directory path permissions MUST be configured correctly by
 the system administrator or the system itself - xrdp-chansrv will not
@@ -350,6 +383,24 @@ GNOME 3 versions later than 3.29.92. Do not use this for any other reason.
 
 This setting will be removed in a later version of xrdp, when GNOME 3 is
 no longer supported.
+
+.TP
+\fBSoundNumSilentFramesAAC\fR=\fInumber\fR
+Sets the \fInumber\fR of silent frames which are sent to client before close
+message is sent, when AAC is selected. If set to 0, no silent frame is sent.
+If not specified, defaults to \fI4\fR.
+
+.TP
+\fBSoundNumSilentFramesMP3\fR=\fInumber\fR
+Sets the \fInumber\fR of silent frames which are sent to client before close
+message is sent, when MP3 is selected. If set to 0, no silent frame is sent.
+If not specified, defaults to \fI2\fR.
+
+.TP
+\fBSoundMsecDoNotSend\fR=\fInumber\fR
+Sets the duration(msec). Sound data is not send to client during \fInumber\fR
+millisecond(s) after close message is sent, when AAC/MP3 is selected.
+If set to 0, all the data is sent. If not specified, defaults to \fI1000\fR.
 
 .SH "SESSIONS VARIABLES"
 All entries in the \fB[SessionVariables]\fR section are set as

@@ -362,6 +362,19 @@ int
 xrdp_mcs_disconnect(struct xrdp_mcs *self);
 
 /* xrdp_sec.c */
+
+/*
+    These are error return codes for:-
+        1. xrdp_sec_process_mcs_data_monitors
+        2. libxrdp_process_monitor_stream
+        3. libxrdp_process_monitor_ex_stream
+    To clarify any reason for a non-zero response code.
+*/
+#define SEC_PROCESS_MONITORS_ERR 1
+#define SEC_PROCESS_MONITORS_ERR_TOO_MANY_MONITORS 2
+#define SEC_PROCESS_MONITORS_ERR_INVALID_DESKTOP 3
+#define SEC_PROCESS_MONITORS_ERR_INVALID_MONITOR 4
+
 struct xrdp_sec *
 xrdp_sec_create(struct xrdp_rdp *owner, struct trans *trans);
 void
@@ -386,8 +399,24 @@ int
 xrdp_sec_incoming(struct xrdp_sec *self);
 int
 xrdp_sec_disconnect(struct xrdp_sec *self);
+int
+xrdp_sec_process_mcs_data_monitors(struct xrdp_sec *self, struct stream *s);
 
 /* xrdp_rdp.c */
+
+/**
+ * Reasons why output is being suppressed or restarted
+ */
+enum suppress_output_reason
+{
+    /// Client has requested suppress via TS_SUPPRESS_OUTPUT_PDU
+    XSO_REASON_CLIENT_REQUEST = (1 << 0),
+    /// Deactivation-Reactivation Sequence [MS-RDPBCGR] 1.3.1.3
+    XSO_REASON_DEACTIVATE_REACTIVATE = (1 << 1),
+    /// Dynamic resize in progress
+    XSO_REASON_DYNAMIC_RESIZE = (1 << 2)
+};
+
 struct xrdp_rdp *
 xrdp_rdp_create(struct xrdp_session *session, struct trans *trans);
 void
@@ -408,6 +437,10 @@ int
 xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
                    int data_pdu_type);
 int
+xrdp_rdp_send_data_from_channel(struct xrdp_rdp *self, struct stream *s,
+                                int data_pdu_type, int channel_id,
+                                int compress);
+int
 xrdp_rdp_send_fastpath(struct xrdp_rdp *self, struct stream *s,
                        int data_pdu_type);
 int
@@ -423,6 +456,21 @@ xrdp_rdp_send_deactivate(struct xrdp_rdp *self);
 int
 xrdp_rdp_send_session_info(struct xrdp_rdp *self, const char *data,
                            int data_bytes);
+/**
+ * Request output suppress or resume
+ *
+ * @param self RDP struct
+ * @param suppress (!= 0 for suppress, 0 for resume)
+ * @param reason Why the output is being suppressed or resumed
+ * @param left Left pixel of repaint area (ignored for suppress)
+ * @param top Top pixel of repaint area (ignored for suppress)
+ * @param right Right pixel of inclusive repaint area (ignored for suppress)
+ * @param bottom Bottom pixel of inclusive repaint area (ignored for suppress)
+ */
+void
+xrdp_rdp_suppress_output(struct xrdp_rdp *self, int suppress,
+                         enum suppress_output_reason reason,
+                         int left, int top, int right, int bottom);
 
 /* xrdp_orders.c */
 struct xrdp_orders *

@@ -27,36 +27,35 @@
 #include "xrdp.h"
 #include "log.h"
 #include "xrdp_configure_options.h"
+#include "copying_third_party.h"
 #include "string_calls.h"
 
 #if !defined(PACKAGE_VERSION)
 #define PACKAGE_VERSION "???"
 #endif
 
-#define THREAD_WAITING 100
-
 static struct xrdp_listen *g_listen = 0;
-static long g_threadid = 0; /* main threadid */
 
-static long g_sync_mutex = 0;
-static long g_sync1_mutex = 0;
-static tbus g_term_event = 0;
-static tbus g_sync_event = 0;
-/* synchronize stuff */
-static int g_sync_command = 0;
-static long g_sync_result = 0;
-static long g_sync_param1 = 0;
-static long g_sync_param2 = 0;
-static long (*g_sync_func)(long param1, long param2);
 
+/*****************************************************************************/
+static void
+print_license(void)
+{
+    g_writeln("Third Party Code Additional Copyright Notices and License Terms");
+    g_writeln("%s", "");
+    g_writeln("Following third-party code are used in xrdp %s:", PACKAGE_VERSION);
+    g_writeln("%s", "");
+    g_writeln("%s", copying_third_party);
+}
 /*****************************************************************************/
 static void
 print_version(void)
 {
     g_writeln("xrdp %s", PACKAGE_VERSION);
     g_writeln("  A Remote Desktop Protocol Server.");
-    g_writeln("  Copyright (C) 2004-2020 Jay Sorg, "
-              "Neutrino Labs, and all contributors.");
+    g_writeln("  Copyright (C) 2004-%d Jay Sorg, "
+              "Neutrino Labs, and all contributors.",
+              VERSION_YEAR);
     g_writeln("  See https://github.com/neutrinolabs/xrdp for more information.");
     g_writeln("%s", "");
 
@@ -82,63 +81,7 @@ print_help(void)
     g_writeln("   -f, --fork        fork on new connection");
     g_writeln("   -c, --config      specify new path to xrdp.ini");
     g_writeln("       --dump-config display config on stdout on startup");
-}
-
-/*****************************************************************************/
-/* This function is used to run a function from the main thread.
-   Sync_func is the function pointer that will run from main thread
-   The function can have two long in parameters and must return long */
-long
-g_xrdp_sync(long (*sync_func)(long param1, long param2), long sync_param1,
-            long sync_param2)
-{
-    long sync_result;
-    int sync_command;
-
-    /* If the function is called from the main thread, the function can
-     * be called directly. g_threadid= main thread ID*/
-    if (tc_threadid_equal(tc_get_threadid(), g_threadid))
-    {
-        /* this is the main thread, call the function directly */
-        /* in fork mode, this always happens too */
-        sync_result = sync_func(sync_param1, sync_param2);
-        LOG_DEVEL(LOG_LEVEL_DEBUG, "g_xrdp_sync processed IN main thread -> continue");
-    }
-    else
-    {
-        /* All threads have to wait here until the main thread
-         * process the function. g_process_waiting_function() is called
-         * from the listening thread. g_process_waiting_function() process the function*/
-        tc_mutex_lock(g_sync1_mutex);
-        tc_mutex_lock(g_sync_mutex);
-        g_sync_param1 = sync_param1;
-        g_sync_param2 = sync_param2;
-        g_sync_func = sync_func;
-        /* set a value THREAD_WAITING so the g_process_waiting_function function
-         * know if any function must be processed */
-        g_sync_command = THREAD_WAITING;
-        tc_mutex_unlock(g_sync_mutex);
-        /* set this event so that the main thread know if
-         * g_process_waiting_function() must be called */
-        g_set_wait_obj(g_sync_event);
-
-        do
-        {
-            g_sleep(100);
-            tc_mutex_lock(g_sync_mutex);
-            /* load new value from global to see if the g_process_waiting_function()
-             * function has processed the function */
-            sync_command = g_sync_command;
-            sync_result = g_sync_result;
-            tc_mutex_unlock(g_sync_mutex);
-        }
-        while (sync_command != 0); /* loop until g_process_waiting_function()
-                                * has processed the request */
-        tc_mutex_unlock(g_sync1_mutex);
-        LOG_DEVEL(LOG_LEVEL_DEBUG, "g_xrdp_sync processed BY main thread -> continue");
-    }
-
-    return sync_result;
+    g_writeln("       --license     show additional license information");
 }
 
 /*****************************************************************************/
@@ -149,10 +92,7 @@ g_xrdp_sync(long (*sync_func)(long param1, long param2), long sync_param1,
 static void
 xrdp_shutdown(int sig)
 {
-    if (!g_is_wait_obj_set(g_term_event))
-    {
-        g_set_wait_obj(g_term_event);
-    }
+    g_set_wait_obj(g_get_term());
 }
 
 /*****************************************************************************/
@@ -163,98 +103,7 @@ xrdp_shutdown(int sig)
 static void
 xrdp_child(int sig)
 {
-    while (g_waitchild() > 0)
-    {
-    }
-}
-
-/*****************************************************************************/
-/* No-op signal handler.
- * Note: only signal safe code (eg. setting wait event) should be executed in
- * this function. For more details see `man signal-safety`
- */
-static void
-xrdp_sig_no_op(int sig)
-{
-    /* no-op */
-}
-
-/*****************************************************************************/
-/* called in child just after fork */
-int
-xrdp_child_fork(void)
-{
-    int pid;
-    char text[256];
-
-    /* close, don't delete these */
-    g_close_wait_obj(g_term_event);
-    g_close_wait_obj(g_sync_event);
-    pid = g_getpid();
-    g_snprintf(text, 255, "xrdp_%8.8x_main_term", pid);
-    g_term_event = g_create_wait_obj(text);
-    g_snprintf(text, 255, "xrdp_%8.8x_main_sync", pid);
-    g_sync_event = g_create_wait_obj(text);
-    return 0;
-}
-
-/*****************************************************************************/
-int
-g_is_term(void)
-{
-    return g_is_wait_obj_set(g_term_event);
-}
-
-/*****************************************************************************/
-void
-g_set_term(int in_val)
-{
-    if (in_val)
-    {
-        g_set_wait_obj(g_term_event);
-    }
-    else
-    {
-        g_reset_wait_obj(g_term_event);
-    }
-}
-
-/*****************************************************************************/
-tbus
-g_get_term_event(void)
-{
-    return g_term_event;
-}
-
-/*****************************************************************************/
-tbus
-g_get_sync_event(void)
-{
-    return g_sync_event;
-}
-
-/*****************************************************************************/
-/*Some function must be called from the main thread.
- if g_sync_command==THREAD_WAITING a function is waiting to be processed*/
-void
-g_process_waiting_function(void)
-{
-    tc_mutex_lock(g_sync_mutex);
-
-    if (g_sync_command != 0)
-    {
-        if (g_sync_func != 0)
-        {
-            if (g_sync_command == THREAD_WAITING)
-            {
-                g_sync_result = g_sync_func(g_sync_param1, g_sync_param2);
-            }
-        }
-
-        g_sync_command = 0;
-    }
-
-    tc_mutex_unlock(g_sync_mutex);
+    g_set_sigchld(1);
 }
 
 /*****************************************************************************/
@@ -284,6 +133,16 @@ static int nocase_matches(const char *candidate, ...)
     return result;
 }
 
+/*****************************************************************************/
+/* No-op signal handler.
+ * Note: only signal safe code (eg. setting wait event) should be executed in
+ * this function. For more details see `man signal-safety`
+ */
+static void
+xrdp_sig_no_op(int sig)
+{
+    /* no-op */
+}
 
 /*****************************************************************************/
 /**
@@ -361,6 +220,10 @@ xrdp_process_params(int argc, char **argv,
         {
             startup_params->dump_config = 1;
         }
+        else if (nocase_matches(option, "--license", NULL))
+        {
+            startup_params->license = 1;
+        }
         else if (nocase_matches(option, "-c", "--config", NULL))
         {
             index++;
@@ -405,23 +268,17 @@ xrdp_sanity_check(void)
 #endif
 
     /* check long, int and void* sizes */
-    if (sizeof(int) != 4)
-    {
-        g_writeln("unusable int size, must be 4");
-        return 1;
-    }
+#if SIZEOF_INT != 4
+#   error unusable int size, must be 4
+#endif
 
-    if (sizeof(long) != sizeof(void *))
-    {
-        g_writeln("long size must match void* size");
-        return 1;
-    }
+#if SIZEOF_LONG != SIZEOF_VOID_P
+#   error sizeof(long) must match sizeof(void*)
+#endif
 
-    if (sizeof(long) != 4 && sizeof(long) != 8)
-    {
-        g_writeln("unusable long size, must be 4 or 8");
-        return 1;
-    }
+#if SIZEOF_LONG != 4 && SIZEOF_LONG != 8
+#   error sizeof(long), must be 4 or 8
+#endif
 
     if (sizeof(tui64) != 8)
     {
@@ -495,6 +352,13 @@ main(int argc, char **argv)
         g_exit(0);
     }
 
+    if (startup_params.license)
+    {
+        print_license();
+        g_deinit();
+        g_exit(0);
+    }
+
     if (xrdp_sanity_check() != 0)
     {
         g_writeln("Fatal error occurred, exiting");
@@ -510,7 +374,7 @@ main(int argc, char **argv)
 
         if (g_file_exist(pid_file)) /* xrdp.pid */
         {
-            fd = g_file_open(pid_file); /* xrdp.pid */
+            fd = g_file_open_ro(pid_file); /* xrdp.pid */
         }
 
         if (fd == -1)
@@ -585,7 +449,7 @@ main(int argc, char **argv)
         g_create_path(pid_file);
 
         /* make sure we can write to pid file */
-        fd = g_file_open(pid_file); /* xrdp.pid */
+        fd = g_file_open_rw(pid_file); /* xrdp.pid */
 
         if (fd == -1)
         {
@@ -644,7 +508,7 @@ main(int argc, char **argv)
         g_sleep(1000);
         /* write the pid to file */
         pid = g_getpid();
-        fd = g_file_open(pid_file); /* xrdp.pid */
+        fd = g_file_open_rw(pid_file); /* xrdp.pid */
 
         if (fd == -1)
         {
@@ -663,44 +527,52 @@ main(int argc, char **argv)
         g_file_close(1);
         g_file_close(2);
 
-        if (g_file_open("/dev/null") < 0)
+        if (g_file_open_rw("/dev/null") < 0)
         {
         }
 
-        if (g_file_open("/dev/null") < 0)
+        if (g_file_open_rw("/dev/null") < 0)
         {
         }
 
-        if (g_file_open("/dev/null") < 0)
+        if (g_file_open_rw("/dev/null") < 0)
         {
         }
 
         /* end of daemonizing code */
     }
 
-    g_threadid = tc_get_threadid();
+    g_set_threadid(tc_get_threadid());
     g_listen = xrdp_listen_create();
     g_signal_user_interrupt(xrdp_shutdown); /* SIGINT */
     g_signal_pipe(xrdp_sig_no_op);          /* SIGPIPE */
     g_signal_terminate(xrdp_shutdown);      /* SIGTERM */
     g_signal_child_stop(xrdp_child);        /* SIGCHLD */
     g_signal_hang_up(xrdp_sig_no_op);       /* SIGHUP */
-    g_sync_mutex = tc_mutex_create();
-    g_sync1_mutex = tc_mutex_create();
+    g_set_sync_mutex(tc_mutex_create());
+    g_set_sync1_mutex(tc_mutex_create());
     pid = g_getpid();
     LOG(LOG_LEVEL_INFO, "starting xrdp with pid %d", pid);
     g_snprintf(text, 255, "xrdp_%8.8x_main_term", pid);
-    g_term_event = g_create_wait_obj(text);
+    g_set_term_event(g_create_wait_obj(text));
 
-    if (g_term_event == 0)
+    if (g_get_term() == 0)
     {
         LOG(LOG_LEVEL_WARNING, "error creating g_term_event");
     }
 
-    g_snprintf(text, 255, "xrdp_%8.8x_main_sync", pid);
-    g_sync_event = g_create_wait_obj(text);
+    g_snprintf(text, 255, "xrdp_%8.8x_main_sigchld", pid);
+    g_set_sigchld_event(g_create_wait_obj(text));
 
-    if (g_sync_event == 0)
+    if (g_get_sigchld() == 0)
+    {
+        LOG(LOG_LEVEL_WARNING, "error creating g_sigchld_event");
+    }
+
+    g_snprintf(text, 255, "xrdp_%8.8x_main_sync", pid);
+    g_set_sync_event(g_create_wait_obj(text));
+
+    if (g_get_sync_event() == 0)
     {
         LOG(LOG_LEVEL_WARNING, "error creating g_sync_event");
     }
@@ -708,10 +580,21 @@ main(int argc, char **argv)
     g_listen->startup_params = &startup_params;
     exit_status = xrdp_listen_main_loop(g_listen);
     xrdp_listen_delete(g_listen);
-    tc_mutex_delete(g_sync_mutex);
-    tc_mutex_delete(g_sync1_mutex);
-    g_delete_wait_obj(g_term_event);
-    g_delete_wait_obj(g_sync_event);
+
+    tc_mutex_delete(g_get_sync_mutex());
+    g_set_sync_mutex(0);
+
+    tc_mutex_delete(g_get_sync1_mutex());
+    g_set_sync1_mutex(0);
+
+    g_delete_wait_obj(g_get_term());
+    g_set_term_event(0);
+
+    g_delete_wait_obj(g_get_sigchld());
+    g_set_sigchld_event(0);
+
+    g_delete_wait_obj(g_get_sync_event());
+    g_set_sync_event(0);
 
     /* only main process should delete pid file */
     if (daemon && (pid == g_getpid()))
