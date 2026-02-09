@@ -1,3 +1,6 @@
+#if defined(HAVE_CONFIG_H)
+#include <config_ac.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -720,7 +723,6 @@ SCardControl(SCARDHANDLE hCard, DWORD dwControlCode, LPCVOID lpInBuffer,
              DWORD nOutBufferSize, LPDWORD lpBytesReturned)
 {
     LONG rv;
-    char text[8148];
 
     LLOGLN(10, ("SCardControl:"));
     LLOGLN(10, ("  hCard %p", hCard));

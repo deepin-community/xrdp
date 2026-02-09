@@ -107,7 +107,9 @@ If not specified or set to \fB0\fP, unlimited.
 
 .TP
 \fBpamerrortxt\fP=\fIerror_text\fP
-Specify text passed to PAM when authentication failed. The maximum length is \fB256\fP.
+Specify additional text displayed to user if authentication fails. The maximum length is \fB256\fP.
+
+The use of 'pam' in the name of this option is historic
 
 .TP
 \fBport\fP=\fIport\fP
@@ -118,22 +120,25 @@ Multiple address:port instances must be separated by spaces or commas. Check the
 Specifying interfaces requires said interfaces to be UP before xrdp starts.
 
 .TP
-\fBrequire_credentials\fP=\fI[true|false]\fP
+\fBenable_token_login\fP=\fI[true|false]\fP
 If set to \fB1\fP, \fBtrue\fP or \fByes\fP, \fBxrdp\fP will scan the user name provided by the
 client for the ASCII field separator character (0x1F). It will then copy over what is after the
 separator as the password supplied by the user and treats it as autologon. If not specified,
 defaults to \fBfalse\fP.
 
 .TP
-\domain_user_separator\fP=\separator\fP
+\fBdomain_user_separator\fP=\fBseparator\fP
 If specified the domain name supplied by the client is appended to the username separated
 by \fBseparator\fP.
 
 .TP
-\enable_token_login\fP=\fI[true|false]\fP
-If set to \fB1\fP, \fBtrue\fP or \fByes\fP, \fBxrdp\fP requires clients to include username and
-password initial connection phase. In other words, xrdp doesn't allow clients to show login
-screen if set to true. If not specified, defaults to \fBfalse\fP.
+\fBrequire_credentials\fP=\fI[true|false]\fP
+If set to \fB1\fP, \fBtrue\fP or \fByes\fP, \fBxrdp\fP requires clients
+to include username and password initial connection phase. In other
+words, xrdp doesn't allow clients to show login screen if set to true.
+It follows that an incorrect password will cause the login to immediately
+fail without displaying the login screen.  If not specified, defaults
+to \fBfalse\fP.
 
 .TP
 \fBsecurity_layer\fP=\fI[tls|rdp|negotiate]\fP
@@ -175,7 +180,9 @@ If set to \fB1\fP, \fBtrue\fP or \fByes\fP, no buffering will be performed in th
 \fBtcp_send_buffer_bytes\fP=\fIbuffer_size\fP
 .TP
 \fBtcp_recv_buffer_bytes\fP=\fIbuffer_size\fP
-Specify send/recv buffer sizes in bytes.  The default value depends on operating system.
+Specify send/recv buffer sizes in bytes.  The default value depends on
+the operating system. It is recommended not to set these on systems with
+dynamic TCP buffer sizing
 
 .TP
 \fBtls_ciphers\fP=\fIcipher_suite\fP
@@ -212,13 +219,25 @@ These options override the colors used internally by \fBxrdp\fP(8) to draw the l
 Colors are defined using a hexadecimal (hex) notation for the combination of Red, Green, and Blue color values (RGB).
 The lowest value that can be given to one of the light sources is 0 (hex 00).
 The highest value is 255 (hex FF).
+.TP
+\fBfv1_select\fP=\fI130:sans-18.fv1,0:sans-10.fv1\fP
+Selects a default fv1 font.
+This parameter is a comma-separated list of DPI:name pairs.  The list
+is scanned from left-to-right. The font used is the first font whose DPI
+value is less-than-or-equal to the vertical DPI of the monitor used for
+the login screen.
+.TP
+\fBdefault_dpi\fP=\fI96\fP
+Default DPI used for a monitor if the client does not send physical
+size information.
+
 
 .SH "LOGGING"
 The following parameters can be used in the \fB[Logging]\fR section:
 
 .TP
 \fBLogFile\fR=\fI@localstatedir@/log/xrdp.log\fR
-This options contains the path to logfile. It can be either absolute or relative.\fR
+This options contains the path to logfile. It can be either absolute or relative. If set to \fB<stdout>\fR, log will go to stdout. Use for debugging only\fR
 
 .TP
 \fBLogLevel\fR=\fIlevel\fR
@@ -322,7 +341,7 @@ Specifies the port number to connect to. If set to \fI\-1\fR, the default port f
 .TP
 \fBxserverbpp\fR=\fI<number>\fR
 Specifies color depth of the backend X server. The default is the color
-depth of the client. Only Xvnc and X11rdp use that setting. Xorg runs at
+depth of the client. Only Xvnc uses that setting. Xorg runs at
 \fI24\fR bpp.
 
 .TP
@@ -335,8 +354,8 @@ values supported for a particular release of \fBxrdp\fR(8) are documented in
 
 .TP
 \fBcode\fR=\fI<number>\fR|\fI0\fR
-Specifies the session type. The default, \fI0\fR, is Xvnc, \fI10\fR is
-X11rdp, and \fI20\fR is Xorg with xorgxrdp modules.
+Specifies the session type. The default, \fI0\fR, is Xvnc,
+and \fI20\fR is Xorg with xorgxrdp modules.
 
 .TP
 \fBchansrvport\fR=\fBDISPLAY(\fR\fIn\fR\fB)\fR|\fI/path/to/domain-socket\fR

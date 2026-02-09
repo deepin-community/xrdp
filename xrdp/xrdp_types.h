@@ -28,11 +28,20 @@
 #include "xrdp_constants.h"
 #include "fifo.h"
 #include "guid.h"
+#include "xrdp_client_info.h"
 
 #define MAX_NR_CHANNELS 16
 #define MAX_CHANNEL_NAME 16
 
+/* Code values used in 'xrdp_mm->code=' settings */
+#define XVNC_SESSION_CODE 0
+#define XORG_SESSION_CODE 20
+
+/* To check whether touch events has been implemented on session type 'mm' */
+#define XRDP_MM_IMPLEMENTS_TOUCH(mm) ((mm)->code != XVNC_SESSION_CODE)
+
 struct source_info;
+struct list16;
 
 /* lib */
 struct xrdp_mod
@@ -55,7 +64,10 @@ struct xrdp_mod
     int (*mod_suppress_output)(struct xrdp_mod *v, int suppress,
                                int left, int top, int right, int bottom);
     int (*mod_server_monitor_resize)(struct xrdp_mod *v,
-                                     int width, int height);
+                                     int width, int height,
+                                     int num_monitors,
+                                     const struct monitor_info *monitors,
+                                     int *in_progress);
     int (*mod_server_monitor_full_invalidate)(struct xrdp_mod *v,
             int width, int height);
     int (*mod_server_version_message)(struct xrdp_mod *v);
@@ -74,7 +86,9 @@ struct xrdp_mod
                               char *data, char *mask);
     int (*server_palette)(struct xrdp_mod *v, int *palette);
     int (*server_msg)(struct xrdp_mod *v, const char *msg, int code);
-    int (*server_is_term)(struct xrdp_mod *v);
+    /* This one can be assigned directly into the is_term member of
+     * a struct trans */
+    int (*server_is_term)(void);
     int (*server_set_clip)(struct xrdp_mod *v, int x, int y, int cx, int cy);
     int (*server_reset_clip)(struct xrdp_mod *v);
     int (*server_set_fgcolor)(struct xrdp_mod *v, int fgcolor);
@@ -95,7 +109,10 @@ struct xrdp_mod
                             int box_left, int box_top,
                             int box_right, int box_bottom,
                             int x, int y, char *data, int data_len);
-    int (*server_reset)(struct xrdp_mod *v, int width, int height, int bpp);
+    int (*client_monitor_resize)(struct xrdp_mod *v, int width, int height,
+                                 int num_monitors,
+                                 const struct monitor_info *monitors);
+    int (*server_monitor_resize_done)(struct xrdp_mod *v);
     int (*server_get_channel_count)(struct xrdp_mod *v);
     int (*server_query_channel)(struct xrdp_mod *v, int index,
                                 char *channel_name,
@@ -161,7 +178,20 @@ struct xrdp_mod
                               int flags, int frame_id);
     int (*server_session_info)(struct xrdp_mod *v, const char *data,
                                int data_bytes);
-    tintptr server_dumby[100 - 46]; /* align, 100 minus the number of server
+    int (*server_set_pointer_large)(struct xrdp_mod *v, int x, int y,
+                                    char *data, char *mask, int bpp,
+                                    int width, int height);
+    int (*server_paint_rects_ex)(struct xrdp_mod *v,
+                                 int num_drects, short *drects,
+                                 int num_crects, short *crects,
+                                 char *data, int left, int top,
+                                 int width, int height,
+                                 int flags, int frame_id,
+                                 void *shmem_ptr, int shmem_bytes);
+    int (*server_egfx_cmd)(struct xrdp_mod *v,
+                           char *cmd, int cmd_bytes,
+                           char *data, int data_bytes);
+    tintptr server_dumby[100 - 50]; /* align, 100 minus the number of server
                                      functions above */
     /* common */
     tintptr handle; /* pointer to self as int */
@@ -232,9 +262,13 @@ struct xrdp_pointer_item
     int stamp;
     int x; /* hotspot */
     int y;
-    char data[32 * 32 * 4];
-    char mask[32 * 32 / 8];
+    int pad0;
+    char data[96 * 96 * 4];
+    char mask[96 * 96 / 8];
     int bpp;
+    int width;
+    int height;
+    int pad1;
 };
 
 struct xrdp_brush_item
@@ -302,25 +336,82 @@ struct xrdp_enc_data;
 enum mm_connect_state
 {
     MMCS_CONNECT_TO_SESMAN,
-    MMCS_PAM_AUTH,
-    MMCS_SESSION_AUTH,
+    MMCS_GATEWAY_LOGIN,
+    MMCS_SESSION_LOGIN,
+    MMCS_CREATE_SESSION,
     MMCS_CONNECT_TO_SESSION,
     MMCS_CONNECT_TO_CHANSRV,
     MMCS_DONE
+};
+
+enum display_resize_state
+{
+    WMRZ_ENCODER_DELETE = 0,
+    WMRZ_EGFX_DELETE_SURFACE,
+    WMRZ_EGFX_CONN_CLOSE,
+    WMRZ_EGFX_CONN_CLOSING,
+    WMRZ_EGFX_CONN_CLOSED,
+    WRMZ_EGFX_DELETE,
+    WMRZ_SERVER_MONITOR_RESIZE,
+    WMRZ_SERVER_MONITOR_MESSAGE_PROCESSING,
+    WMRZ_SERVER_MONITOR_MESSAGE_PROCESSED,
+    WMRZ_XRDP_CORE_RESET,
+    WMRZ_XRDP_CORE_RESET_PROCESSING,
+    WMRZ_XRDP_CORE_RESET_PROCESSED,
+    WMRZ_EGFX_INITIALIZE,
+    WMRZ_EGFX_INITALIZING,
+    WMRZ_EGFX_INITIALIZED,
+    WMRZ_ENCODER_CREATE,
+    WMRZ_SERVER_INVALIDATE,
+    WMRZ_COMPLETE,
+    WMRZ_ERROR
+};
+
+#define XRDP_DISPLAY_RESIZE_STATE_TO_STR(status) \
+    ((status) == WMRZ_ENCODER_DELETE ? "WMRZ_ENCODER_DELETE" : \
+     (status) == WMRZ_EGFX_DELETE_SURFACE ? "WMRZ_EGFX_DELETE_SURFACE" : \
+     (status) == WMRZ_EGFX_CONN_CLOSE ? "WMRZ_EGFX_CONN_CLOSE" : \
+     (status) == WMRZ_EGFX_CONN_CLOSING ? "WMRZ_EGFX_CONN_CLOSING" : \
+     (status) == WMRZ_EGFX_CONN_CLOSED ? "WMRZ_EGFX_CONN_CLOSED" : \
+     (status) == WRMZ_EGFX_DELETE ? "WMRZ_EGFX_DELETE" : \
+     (status) == WMRZ_SERVER_MONITOR_RESIZE ? "WMRZ_SERVER_MONITOR_RESIZE" : \
+     (status) == WMRZ_SERVER_MONITOR_MESSAGE_PROCESSING ? \
+     "WMRZ_SERVER_MONITOR_MESSAGE_PROCESSING" : \
+     (status) == WMRZ_SERVER_MONITOR_MESSAGE_PROCESSED ? \
+     "WMRZ_SERVER_MONITOR_MESSAGE_PROCESSED" : \
+     (status) == WMRZ_XRDP_CORE_RESET ? "WMRZ_XRDP_CORE_RESET" : \
+     (status) == WMRZ_XRDP_CORE_RESET_PROCESSING ? \
+     "WMRZ_XRDP_CORE_RESET_PROCESSING" : \
+     (status) == WMRZ_XRDP_CORE_RESET_PROCESSED ? \
+     "WMRZ_XRDP_CORE_RESET_PROCESSED" : \
+     (status) == WMRZ_EGFX_INITIALIZE ? "WMRZ_EGFX_INITIALIZE" : \
+     (status) == WMRZ_EGFX_INITALIZING ? "WMRZ_EGFX_INITALIZING" : \
+     (status) == WMRZ_EGFX_INITIALIZED ? "WMRZ_EGFX_INITIALIZED" : \
+     (status) == WMRZ_ENCODER_CREATE ? "WMRZ_ENCODER_CREATE" : \
+     (status) == WMRZ_SERVER_INVALIDATE ? "WMRZ_SERVER_INVALIDATE" : \
+     (status) == WMRZ_COMPLETE ? "WMRZ_COMPLETE" : \
+     (status) == WMRZ_ERROR ? "WMRZ_ERROR" : \
+     "unknown" \
+    )
+
+enum xrdp_egfx_flags
+{
+    XRDP_EGFX_NONE = 0,
+    XRDP_EGFX_H264 = 1,
+    XRDP_EGFX_RFX_PRO = 2
 };
 
 struct xrdp_mm
 {
     struct xrdp_wm *wm; /* owner */
     enum mm_connect_state connect_state; /* State of connection */
+    int mmcs_expecting_msg; /* Connect state machine is expecting
+                               a message from sesman */
     /* Other processes we connect to */
-    /* NB : When we move to UDS, the sesman and pam_auth
-     * connection be merged */
     int use_sesman; /* true if this is a sesman session */
-    int use_pam_auth; /* True if we're to authenticate using PAM */
+    int use_gw_login; /* True if we're to login using  a gateway */
     int use_chansrv; /* true if chansrvport is set in xrdp.ini or using sesman */
     struct trans *sesman_trans; /* connection to sesman */
-    struct trans *pam_auth_trans; /* connection to pam authenticator */
     struct trans *chan_trans; /* connection to chansrv */
 
     /* We can't delete transports while we're in a callback for that
@@ -328,7 +419,6 @@ struct xrdp_mm
      * These flags mark transports as needing to be deleted when
      * we are definitely not in a transport callback */
     int delete_sesman_trans;
-    int delete_pam_auth_trans;
 
     struct list *login_names;
     struct list *login_values;
@@ -338,18 +428,28 @@ struct xrdp_mm
     int (*mod_exit)(struct xrdp_mod *);
     struct xrdp_mod *mod; /* module interface */
     int display; /* 10 for :10.0, 11 for :11.0, etc */
+    int uid; /* UID for a successful login, -1 otherwise */
     struct guid guid; /* GUID for the session, or all zeros  */
-    int code; /* 0=Xvnc session, 10=X11rdp session, 20=xorg driver mode */
+    int code; /* 0=Xvnc session, 20=xorg driver mode */
     struct xrdp_encoder *encoder;
     int cs2xr_cid_map[256];
     int xr2cr_cid_map[256];
     int dynamic_monitor_chanid;
+    struct xrdp_egfx *egfx;
+    int egfx_up;
+    enum xrdp_egfx_flags egfx_flags;
+    int gfx_delay_autologin;
+    int mod_uses_wm_screen_for_gfx;
+    /* Resize on-the-fly control */
+    struct display_control_monitor_layout_data *resize_data;
+    struct list *resize_queue;
+    tbus resize_ready;
 };
 
 struct xrdp_key_info
 {
     int sym;
-    int chr;
+    char32_t chr;
 };
 
 struct xrdp_keymap
@@ -458,6 +558,7 @@ struct xrdp_wm
     struct xrdp_font *default_font;
     struct xrdp_keymap keymap;
     int hide_log_window;
+    int fatal_error_in_log_window;
     struct xrdp_bitmap *target_surface; /* either screen or os surface */
     int current_surface_index;
     int hints;
@@ -465,6 +566,9 @@ struct xrdp_wm
 
     /* configuration derived from xrdp.ini */
     struct xrdp_config *xrdp_config;
+
+    struct xrdp_region *screen_dirty_region;
+    int last_screen_draw_time;
 };
 
 /* rdp process */
@@ -558,7 +662,7 @@ struct xrdp_bitmap
     struct list *child_list;
     /* for edit */
     int edit_pos;
-    twchar password_char;
+    char32_t password_char;
     /* for button or combo */
     int state; /* for button 0 = normal 1 = down */
     /* for combo */
@@ -574,14 +678,15 @@ struct xrdp_bitmap
     int crc16;
 };
 
-#define NUM_FONTS 0x4e00
+#define MAX_FONT_CHARS 0x4e00
 #define DEFAULT_FONT_NAME "sans-10.fv1"
+#define DEFAULT_FONT_PIXEL_SIZE 16
+#define DEFAULT_FV1_SELECT "130:sans-18.fv1,0:" DEFAULT_FONT_NAME
 
-#define DEFAULT_ELEMENT_TOP   35
-#define DEFAULT_BUTTON_W      60
-#define DEFAULT_BUTTON_H      23
-#define DEFAULT_COMBO_H       21
-#define DEFAULT_EDIT_H        21
+#define DEFAULT_BUTTON_MARGIN_H 12
+#define DEFAULT_BUTTON_MARGIN_W 12
+#define DEFAULT_COMBO_MARGIN_H 6
+#define DEFAULT_EDIT_MARGIN_H  6
 #define DEFAULT_WND_LOGIN_W   425
 #define DEFAULT_WND_LOGIN_H   475
 #define DEFAULT_WND_HELP_W    340
@@ -594,9 +699,15 @@ struct xrdp_bitmap
 struct xrdp_font
 {
     struct xrdp_wm *wm;
-    struct xrdp_font_char font_items[NUM_FONTS];
+    // Font characters, accessed by Unicode codepoint. The first 32
+    // entries are unused.
+    struct xrdp_font_char chars[MAX_FONT_CHARS];
+    unsigned int char_count; // # elements in above array
+    struct xrdp_font_char *default_char; // Pointer into above array
     char name[32];
     int size;
+    /** Body height in pixels */
+    int body_height;
     int style;
 };
 
@@ -618,6 +729,7 @@ struct xrdp_startup_params
     int version;
     int fork;
     int dump_config;
+    int license;
     int tcp_send_buffer_bytes;
     int tcp_recv_buffer_bytes;
     int tcp_nodelay;
@@ -626,8 +738,38 @@ struct xrdp_startup_params
 };
 
 /*
- * For storing xrdp.ini configuration settings
+ * For storing xrdp.ini (and other) configuration settings
  */
+
+struct xrdp_ls_dimensions
+{
+    int  width;               /* window width */
+    int  height;              /* window height */
+    int  logo_width;          /* logo width (optional) */
+    int  logo_height;          /* logo height (optional) */
+    int  logo_x_pos;          /* logo x co-ordinate */
+    int  logo_y_pos;          /* logo y co-ordinate */
+    int  label_x_pos;         /* x pos of labels */
+    int  label_width;         /* width of labels */
+    int  input_x_pos;         /* x pos of text and combo boxes */
+    int  input_width;         /* width of input and combo boxes */
+    int  input_y_pos;         /* y pos for for first label and combo box */
+    int  btn_ok_x_pos;        /* x pos for OK button */
+    int  btn_ok_y_pos;        /* y pos for OK button */
+    int  btn_ok_width;        /* width of OK button */
+    int  btn_ok_height;       /* height of OK button */
+    int  btn_cancel_x_pos;    /* x pos for Cancel button */
+    int  btn_cancel_y_pos;    /* y pos for Cancel button */
+    int  btn_cancel_width;    /* width of Cancel button */
+    int  btn_cancel_height;   /* height of Cancel button */
+    int default_btn_height;   /* Default button height (e.g. OK on login box) */
+    int log_wnd_width;        /* Width of log window */
+    int log_wnd_height;       /* Height of log window */
+    int edit_height;          /* Height of an edit box */
+    int combo_height;         /* Height of a combo box */
+    int help_wnd_width;        /* Width of login help window */
+    int help_wnd_height;       /* Height of login help window */
+};
 
 struct xrdp_cfg_globals
 {
@@ -665,34 +807,21 @@ struct xrdp_cfg_globals
     int  background;
 
     /* login screen */
+    unsigned int  default_dpi;   /* Default DPI to use if nothing from client */
+    char fv1_select[256];        /* Selection string for fv1 font */
     int  ls_top_window_bg_color; /* top level window background color */
-    int  ls_width;               /* window width */
-    int  ls_height;              /* window height */
     int  ls_bg_color;            /* background color */
     char ls_background_image[256];  /* background image file name */
-    enum xrdp_bitmap_load_transform ls_background_transform;
     /* transform to apply to background image */
+    enum xrdp_bitmap_load_transform ls_background_transform;
     char ls_logo_filename[256];  /* logo filename */
-    enum xrdp_bitmap_load_transform ls_logo_transform;
     /* transform to apply to logo */
-    int  ls_logo_width;          /* logo width (optional) */
-    int  ls_logo_height;          /* logo height (optional) */
-    int  ls_logo_x_pos;          /* logo x coordinate */
-    int  ls_logo_y_pos;          /* logo y coordinate */
-    int  ls_label_x_pos;         /* x pos of labels */
-    int  ls_label_width;         /* width of labels */
-    int  ls_input_x_pos;         /* x pos of text and combo boxes */
-    int  ls_input_width;         /* width of input and combo boxes */
-    int  ls_input_y_pos;         /* y pos for for first label and combo box */
-    int  ls_btn_ok_x_pos;        /* x pos for OK button */
-    int  ls_btn_ok_y_pos;        /* y pos for OK button */
-    int  ls_btn_ok_width;        /* width of OK button */
-    int  ls_btn_ok_height;       /* height of OK button */
-    int  ls_btn_cancel_x_pos;    /* x pos for Cancel button */
-    int  ls_btn_cancel_y_pos;    /* y pos for Cancel button */
-    int  ls_btn_cancel_width;    /* width of Cancel button */
-    int  ls_btn_cancel_height;   /* height of Cancel button */
+    enum xrdp_bitmap_load_transform ls_logo_transform;
     char ls_title[256];          /* loginscreen window title */
+    /* Login screen dimensions, unscaled (from config) */
+    struct xrdp_ls_dimensions ls_unscaled;
+    /* Login screen dimensions, scaled (after font is loaded) */
+    struct xrdp_ls_dimensions ls_scaled;
 };
 
 struct xrdp_cfg_logging

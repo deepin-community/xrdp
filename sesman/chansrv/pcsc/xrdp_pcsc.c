@@ -1,3 +1,6 @@
+#if defined(HAVE_CONFIG_H)
+#include <config_ac.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <poll.h>
 
 #include "string_calls.h"
 
@@ -263,29 +267,24 @@ get_message(int *code, char *data, int *bytes)
     int max_bytes;
     int error;
     int recv_rv;
-    int max;
     int lcode;
-    struct timeval time;
-    fd_set rd_set;
+    struct pollfd pollfd;
 
     LLOGLN(10, ("get_message:"));
-    max = g_sck + 1;
     while (1)
     {
         LLOGLN(10, ("get_message: loop"));
-        time.tv_sec = 1;
-        time.tv_usec = 0;
-        FD_ZERO(&rd_set);
-        FD_SET(((unsigned int)g_sck), &rd_set);
-        error = select(max, &rd_set, 0, 0, &time);
+        pollfd.fd = g_sck;
+        pollfd.events = POLLIN;
+        pollfd.revents = 0;
+        error = poll(&pollfd, 1, 1000);
         if (error == 1)
         {
             pthread_mutex_lock(&g_mutex);
-            time.tv_sec = 0;
-            time.tv_usec = 0;
-            FD_ZERO(&rd_set);
-            FD_SET(((unsigned int)g_sck), &rd_set);
-            error = select(max, &rd_set, 0, 0, &time);
+            pollfd.fd = g_sck;
+            pollfd.events = POLLIN;
+            pollfd.revents = 0;
+            error = poll(&pollfd, 1, 0);
             if (error == 1)
             {
                 /* just take a look at the next message */

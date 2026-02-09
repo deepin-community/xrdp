@@ -42,8 +42,20 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
 #include <linux/vm_sockets.h>
+#elif defined(__FreeBSD__)
+// sockaddr_hvs is not available outside the kernel for whatever reason
+struct sockaddr_hvs
+{
+    unsigned char sa_len;
+    sa_family_t   sa_family;
+    unsigned int  hvs_port;
+    unsigned char hvs_zero[sizeof(struct sockaddr) -  sizeof(sa_family_t) - sizeof(unsigned char) - sizeof(unsigned int)];
+};
 #endif
+#endif
+#include <poll.h>
 #include <sys/un.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -52,6 +64,10 @@
 #include <sys/stat.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#if defined(HAVE_SYS_PRCTL_H)
+#include <sys/prctl.h>
+#endif
+#include <sys/mman.h>
 #include <dlfcn.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -60,6 +76,9 @@
 #include <pwd.h>
 #include <time.h>
 #include <grp.h>
+#endif
+#ifdef HAVE_SETUSERCONTEXT
+#include <login_cap.h>
 #endif
 
 #include <stdlib.h>
@@ -76,14 +95,10 @@
 #endif
 
 #include "os_calls.h"
+#include "limits.h"
 #include "string_calls.h"
 #include "log.h"
-
-/* for clearenv() */
-#if defined(_WIN32)
-#else
-extern char **environ;
-#endif
+#include "xrdp_constants.h"
 
 #if defined(__linux__)
 #include <linux/unistd.h>
@@ -103,32 +118,30 @@ extern char **environ;
 #define INADDR_NONE ((unsigned long)-1)
 #endif
 
+/**
+ * Type big enough to hold socket address information for any connecting type
+ */
+union sock_info
+{
+    struct sockaddr sa;
+    struct sockaddr_in sa_in;
+#if defined(XRDP_ENABLE_IPV6)
+    struct sockaddr_in6 sa_in6;
+#endif
+    struct sockaddr_un sa_un;
+#if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
+    struct sockaddr_vm sa_vm;
+#elif defined(__FreeBSD__)
+    struct sockaddr_hvs sa_hvs;
+#endif
+#endif
+};
+
 /*****************************************************************************/
 int
 g_rm_temp_dir(void)
 {
-    return 0;
-}
-
-/*****************************************************************************/
-int
-g_mk_socket_path(const char *app_name)
-{
-    if (!g_directory_exist(XRDP_SOCKET_PATH))
-    {
-        if (!g_create_path(XRDP_SOCKET_PATH"/"))
-        {
-            /* if failed, still check if it got created by someone else */
-            if (!g_directory_exist(XRDP_SOCKET_PATH))
-            {
-                LOG(LOG_LEVEL_ERROR,
-                    "g_mk_socket_path: g_create_path(%s) failed",
-                    XRDP_SOCKET_PATH);
-                return 1;
-            }
-        }
-        g_chmod_hex(XRDP_SOCKET_PATH, 0x1777);
-    }
     return 0;
 }
 
@@ -141,22 +154,6 @@ g_init(const char *app_name)
 
     WSAStartup(2, &wsadata);
 #endif
-
-    /* In order to get g_mbstowcs and g_wcstombs to work properly with
-       UTF-8 non-ASCII characters, LC_CTYPE cannot be "C" or blank.
-       To select UTF-8 encoding without specifying any countries/languages,
-       "C.UTF-8" is used but provided in few systems.
-
-       See also: https://sourceware.org/glibc/wiki/Proposals/C.UTF-8 */
-    char *lc_ctype;
-    lc_ctype = setlocale(LC_CTYPE, "C.UTF-8");
-    if (lc_ctype == NULL)
-    {
-        /* use en_US.UTF-8 instead if not available */
-        setlocale(LC_CTYPE, "en_US.UTF-8");
-    }
-
-    g_mk_socket_path(app_name);
 }
 
 /*****************************************************************************/
@@ -169,38 +166,6 @@ g_deinit(void)
     fflush(stdout);
     fflush(stderr);
     g_rm_temp_dir();
-}
-
-/*****************************************************************************/
-/* allocate memory, returns a pointer to it, size bytes are allocated,
-   if zero is non zero, each byte will be set to zero */
-void *
-g_malloc(int size, int zero)
-{
-    char *rv;
-
-    rv = (char *)malloc(size);
-
-    if (zero)
-    {
-        if (rv != 0)
-        {
-            memset(rv, 0, size);
-        }
-    }
-
-    return rv;
-}
-
-/*****************************************************************************/
-/* free the memory pointed to by ptr, ptr can be zero */
-void
-g_free(void *ptr)
-{
-    if (ptr != 0)
-    {
-        free(ptr);
-    }
 }
 
 /*****************************************************************************/
@@ -313,20 +278,6 @@ g_hexdump(const char *p, int len)
 }
 
 /*****************************************************************************/
-void
-g_memset(void *ptr, int val, int size)
-{
-    memset(ptr, val, size);
-}
-
-/*****************************************************************************/
-void
-g_memcpy(void *d_ptr, const void *s_ptr, int size)
-{
-    memcpy(d_ptr, s_ptr, size);
-}
-
-/*****************************************************************************/
 int
 g_getchar(void)
 {
@@ -427,6 +378,7 @@ g_tcp_socket(void)
     {
         switch (errno)
         {
+            case EPROTONOSUPPORT: /* if IPv6 is supported, but don't have an IPv6 address */
             case EAFNOSUPPORT: /* if IPv6 not supported, retry IPv4 */
                 LOG(LOG_LEVEL_INFO, "IPv6 not supported, falling back to IPv4");
                 rv = (int)socket(AF_INET, SOCK_STREAM, 0);
@@ -475,23 +427,6 @@ g_tcp_socket(void)
             option_value = 1;
             option_len = sizeof(option_value);
             if (setsockopt(rv, SOL_SOCKET, SO_REUSEADDR, (char *)&option_value,
-                           option_len) < 0)
-            {
-                LOG(LOG_LEVEL_ERROR, "g_tcp_socket: setsockopt() failed");
-            }
-        }
-    }
-
-    option_len = sizeof(option_value);
-
-    if (getsockopt(rv, SOL_SOCKET, SO_SNDBUF, (char *)&option_value,
-                   &option_len) == 0)
-    {
-        if (option_value < (1024 * 32))
-        {
-            option_value = 1024 * 32;
-            option_len = sizeof(option_value);
-            if (setsockopt(rv, SOL_SOCKET, SO_SNDBUF, (char *)&option_value,
                            option_len) < 0)
             {
                 LOG(LOG_LEVEL_ERROR, "g_tcp_socket: setsockopt() failed");
@@ -589,11 +524,32 @@ g_sck_local_socket(void)
 
 /*****************************************************************************/
 int
+g_sck_local_socketpair(int sck[2])
+{
+#if defined(_WIN32)
+    return -1;
+#else
+    return socketpair(PF_LOCAL, SOCK_STREAM, 0, sck);
+#endif
+}
+
+/*****************************************************************************/
+int
 g_sck_vsock_socket(void)
 {
 #if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
+    LOG(LOG_LEVEL_DEBUG, "g_sck_vsock_socket: returning Linux vsock socket");
     return socket(PF_VSOCK, SOCK_STREAM, 0);
+#elif defined(__FreeBSD__)
+    LOG(LOG_LEVEL_DEBUG, "g_sck_vsock_socket: returning FreeBSD Hyper-V socket");
+    return socket(AF_HYPERV, SOCK_STREAM, 0); // docs say to use AF_HYPERV here - PF_HYPERV does not exist
 #else
+    LOG(LOG_LEVEL_DEBUG, "g_sck_vsock_socket: vsock enabled at compile time, but platform is unsupported");
+    return -1;
+#endif
+#else
+    LOG(LOG_LEVEL_DEBUG, "g_sck_vsock_socket: vsock disabled at compile time");
     return -1;
 #endif
 }
@@ -636,7 +592,7 @@ g_sck_get_peer_cred(int sck, int *pid, int *uid, int *gid)
     unsigned int xucred_length;
     xucred_length = sizeof(xucred);
 
-    if (getsockopt(sck, SOL_SOCKET, LOCAL_PEERCRED, &xucred, &xucred_length))
+    if (getsockopt(sck, SOL_LOCAL, LOCAL_PEERCRED, &xucred, &xucred_length))
     {
         return 1;
     }
@@ -659,83 +615,111 @@ g_sck_get_peer_cred(int sck, int *pid, int *uid, int *gid)
 }
 
 /*****************************************************************************/
+
+static const char *
+get_peer_description(const union sock_info *sock_info,
+                     char *desc, unsigned int bytes)
+{
+    if (bytes > 0)
+    {
+        int family = sock_info->sa.sa_family;
+        switch (family)
+        {
+            case AF_INET:
+            {
+                char ip[INET_ADDRSTRLEN];
+                const struct sockaddr_in *sa_in = &sock_info->sa_in;
+                if (inet_ntop(family, &sa_in->sin_addr,
+                              ip, sizeof(ip)) != NULL)
+                {
+                    g_snprintf(desc, bytes, "%s:%d", ip,
+                               ntohs(sa_in->sin_port));
+                }
+                else
+                {
+                    g_snprintf(desc, bytes, "<unknown AF_INET>:%d",
+                               ntohs(sa_in->sin_port));
+                }
+                break;
+            }
+
+#if defined(XRDP_ENABLE_IPV6)
+            case AF_INET6:
+            {
+                char ip[INET6_ADDRSTRLEN];
+                const struct sockaddr_in6 *sa_in6 = &sock_info->sa_in6;
+                if (inet_ntop(family, &sa_in6->sin6_addr,
+                              ip, sizeof(ip)) != NULL)
+                {
+                    g_snprintf(desc, bytes, "[%s]:%d", ip,
+                               ntohs(sa_in6->sin6_port));
+                }
+                else
+                {
+                    g_snprintf(desc, bytes, "[<unknown AF_INET6>]:%d",
+                               ntohs(sa_in6->sin6_port));
+                }
+                break;
+            }
+#endif
+
+            case AF_UNIX:
+            {
+                g_snprintf(desc, bytes, "AF_UNIX");
+                break;
+            }
+
+#if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
+
+            case AF_VSOCK:
+            {
+                const struct sockaddr_vm *sa_vm = &sock_info->sa_vm;
+
+                g_snprintf(desc, bytes, "AF_VSOCK:cid=%u/port=%u",
+                           sa_vm->svm_cid, sa_vm->svm_port);
+
+                break;
+            }
+
+#elif defined(__FreeBSD__)
+
+            case AF_HYPERV:
+            {
+                const struct sockaddr_hvs *sa_hvs = &sock_info->sa_hvs;
+
+                g_snprintf(desc, bytes, "AF_HYPERV:port=%u", sa_hvs->hvs_port);
+
+                break;
+            }
+
+#endif
+#endif
+            default:
+                g_snprintf(desc, bytes, "Unknown address family %d", family);
+                break;
+        }
+    }
+
+    return desc;
+}
+
+/*****************************************************************************/
 void
 g_sck_close(int sck)
 {
 #if defined(_WIN32)
     closesocket(sck);
 #else
-    char sockname[128];
-    union
-    {
-        struct sockaddr sock_addr;
-        struct sockaddr_in sock_addr_in;
-#if defined(XRDP_ENABLE_IPV6)
-        struct sockaddr_in6 sock_addr_in6;
-#endif
-#if defined(XRDP_ENABLE_VSOCK)
-        struct sockaddr_vm sock_addr_vm;
-#endif
-    } sock_info;
-    socklen_t sock_len = sizeof(sock_info);
+    char sockname[MAX_PEER_DESCSTRLEN];
 
+    union sock_info sock_info;
+    socklen_t sock_len = sizeof(sock_info);
     memset(&sock_info, 0, sizeof(sock_info));
 
-    if (getsockname(sck, &sock_info.sock_addr, &sock_len) == 0)
+    if (getsockname(sck, &sock_info.sa, &sock_len) == 0)
     {
-        switch (sock_info.sock_addr.sa_family)
-        {
-            case AF_INET:
-            {
-                struct sockaddr_in *sock_addr_in = &sock_info.sock_addr_in;
-
-                g_snprintf(sockname, sizeof(sockname), "AF_INET %s:%d",
-                           inet_ntoa(sock_addr_in->sin_addr),
-                           ntohs(sock_addr_in->sin_port));
-                break;
-            }
-
-#if defined(XRDP_ENABLE_IPV6)
-
-            case AF_INET6:
-            {
-                char addr[48];
-                struct sockaddr_in6 *sock_addr_in6 = &sock_info.sock_addr_in6;
-
-                g_snprintf(sockname, sizeof(sockname), "AF_INET6 %s port %d",
-                           inet_ntop(sock_addr_in6->sin6_family,
-                                     &sock_addr_in6->sin6_addr, addr, sizeof(addr)),
-                           ntohs(sock_addr_in6->sin6_port));
-                break;
-            }
-
-#endif
-
-            case AF_UNIX:
-                g_snprintf(sockname, sizeof(sockname), "AF_UNIX");
-                break;
-
-#if defined(XRDP_ENABLE_VSOCK)
-
-            case AF_VSOCK:
-            {
-                struct sockaddr_vm *sock_addr_vm = &sock_info.sock_addr_vm;
-
-                g_snprintf(sockname,
-                           sizeof(sockname),
-                           "AF_VSOCK cid %d port %d",
-                           sock_addr_vm->svm_cid,
-                           sock_addr_vm->svm_port);
-                break;
-            }
-
-#endif
-
-            default:
-                g_snprintf(sockname, sizeof(sockname), "unknown family %d",
-                           sock_info.sock_addr.sa_family);
-                break;
-        }
+        get_peer_description(&sock_info, sockname, sizeof(sockname));
     }
     else
     {
@@ -1031,6 +1015,7 @@ int
 g_sck_vsock_bind(int sck, const char *port)
 {
 #if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
     struct sockaddr_vm s;
 
     g_memset(&s, 0, sizeof(struct sockaddr_vm));
@@ -1039,6 +1024,17 @@ g_sck_vsock_bind(int sck, const char *port)
     s.svm_cid = VMADDR_CID_ANY;
 
     return bind(sck, (struct sockaddr *)&s, sizeof(struct sockaddr_vm));
+#elif defined(__FreeBSD__)
+    struct sockaddr_hvs s;
+
+    g_memset(&s, 0, sizeof(struct sockaddr_hvs));
+    s.sa_family = AF_HYPERV;
+    s.hvs_port = atoi(port);
+
+    return bind(sck, (struct sockaddr *)&s, sizeof(struct sockaddr_hvs));
+#else
+    return -1;
+#endif
 #else
     return -1;
 #endif
@@ -1049,6 +1045,7 @@ int
 g_sck_vsock_bind_address(int sck, const char *port, const char *address)
 {
 #if defined(XRDP_ENABLE_VSOCK)
+#if defined(__linux__)
     struct sockaddr_vm s;
 
     g_memset(&s, 0, sizeof(struct sockaddr_vm));
@@ -1057,6 +1054,18 @@ g_sck_vsock_bind_address(int sck, const char *port, const char *address)
     s.svm_cid = atoi(address);
 
     return bind(sck, (struct sockaddr *)&s, sizeof(struct sockaddr_vm));
+#elif defined(__FreeBSD__)
+    struct sockaddr_hvs s;
+
+    g_memset(&s, 0, sizeof(struct sockaddr_hvs));
+    s.sa_family = AF_HYPERV;
+    s.hvs_port = atoi(port);
+    // channel/address currently unsupported in FreeBSD 13.
+
+    return bind(sck, (struct sockaddr *)&s, sizeof(struct sockaddr_hvs));
+#else
+    return -1;
+#endif
 #else
     return -1;
 #endif
@@ -1227,19 +1236,10 @@ g_sck_listen(int sck)
 
 /*****************************************************************************/
 int
-g_tcp_accept(int sck)
+g_sck_accept(int sck)
 {
     int ret;
-    char msg[256];
-    union
-    {
-        struct sockaddr sock_addr;
-        struct sockaddr_in sock_addr_in;
-#if defined(XRDP_ENABLE_IPV6)
-        struct sockaddr_in6 sock_addr_in6;
-#endif
-    } sock_info;
-
+    union sock_info sock_info;
     socklen_t sock_len = sizeof(sock_info);
     memset(&sock_info, 0, sock_len);
 
@@ -1247,141 +1247,10 @@ g_tcp_accept(int sck)
 
     if (ret > 0)
     {
-        switch (sock_info.sock_addr.sa_family)
-        {
-            case AF_INET:
-            {
-                struct sockaddr_in *sock_addr_in = &sock_info.sock_addr_in;
-
-                g_snprintf(msg, sizeof(msg), "A connection received from %s port %d",
-                           inet_ntoa(sock_addr_in->sin_addr),
-                           ntohs(sock_addr_in->sin_port));
-                LOG(LOG_LEVEL_INFO, "%s", msg);
-
-                break;
-            }
-
-#if defined(XRDP_ENABLE_IPV6)
-
-            case AF_INET6:
-            {
-                struct sockaddr_in6 *sock_addr_in6 = &sock_info.sock_addr_in6;
-                char addr[256];
-
-                inet_ntop(sock_addr_in6->sin6_family,
-                          &sock_addr_in6->sin6_addr, addr, sizeof(addr));
-                g_snprintf(msg, sizeof(msg), "A connection received from %s port %d",
-                           addr, ntohs(sock_addr_in6->sin6_port));
-                LOG(LOG_LEVEL_INFO, "%s", msg);
-
-                break;
-
-            }
-
-#endif
-        }
-    }
-
-    return ret;
-}
-
-/*****************************************************************************/
-int
-g_sck_accept(int sck, char *addr, int addr_bytes, char *port, int port_bytes)
-{
-    int ret;
-    char msg[256];
-    union
-    {
-        struct sockaddr sock_addr;
-        struct sockaddr_in sock_addr_in;
-#if defined(XRDP_ENABLE_IPV6)
-        struct sockaddr_in6 sock_addr_in6;
-#endif
-        struct sockaddr_un sock_addr_un;
-#if defined(XRDP_ENABLE_VSOCK)
-        struct sockaddr_vm sock_addr_vm;
-#endif
-    } sock_info;
-
-    socklen_t sock_len = sizeof(sock_info);
-    memset(&sock_info, 0, sock_len);
-
-    ret = accept(sck, (struct sockaddr *)&sock_info, &sock_len);
-
-    if (ret > 0)
-    {
-        switch (sock_info.sock_addr.sa_family)
-        {
-            case AF_INET:
-            {
-                struct sockaddr_in *sock_addr_in = &sock_info.sock_addr_in;
-
-                g_snprintf(addr, addr_bytes, "%s", inet_ntoa(sock_addr_in->sin_addr));
-                g_snprintf(port, port_bytes, "%d", ntohs(sock_addr_in->sin_port));
-                g_snprintf(msg, sizeof(msg),
-                           "AF_INET connection received from %s port %s",
-                           addr, port);
-                break;
-            }
-
-#if defined(XRDP_ENABLE_IPV6)
-
-            case AF_INET6:
-            {
-                struct sockaddr_in6 *sock_addr_in6 = &sock_info.sock_addr_in6;
-
-                inet_ntop(sock_addr_in6->sin6_family,
-                          &sock_addr_in6->sin6_addr, addr, addr_bytes);
-                g_snprintf(port, port_bytes, "%d", ntohs(sock_addr_in6->sin6_port));
-                g_snprintf(msg, sizeof(msg),
-                           "AF_INET6 connection received from %s port %s",
-                           addr, port);
-                break;
-            }
-
-#endif
-
-            case AF_UNIX:
-            {
-                g_strncpy(addr, "", addr_bytes - 1);
-                g_strncpy(port, "", port_bytes - 1);
-                g_snprintf(msg, sizeof(msg), "AF_UNIX connection received");
-                break;
-            }
-
-#if defined(XRDP_ENABLE_VSOCK)
-
-            case AF_VSOCK:
-            {
-                struct sockaddr_vm *sock_addr_vm = &sock_info.sock_addr_vm;
-
-                g_snprintf(addr, addr_bytes - 1, "%d", sock_addr_vm->svm_cid);
-                g_snprintf(port, addr_bytes - 1, "%d", sock_addr_vm->svm_port);
-
-                g_snprintf(msg,
-                           sizeof(msg),
-                           "AF_VSOCK connection received from cid: %s port: %s",
-                           addr,
-                           port);
-
-                break;
-            }
-
-#endif
-            default:
-            {
-                g_strncpy(addr, "", addr_bytes - 1);
-                g_strncpy(port, "", port_bytes - 1);
-                g_snprintf(msg, sizeof(msg),
-                           "connection received, unknown socket family %d",
-                           sock_info.sock_addr.sa_family);
-                break;
-            }
-        }
-
-
-        LOG(LOG_LEVEL_INFO, "Socket %d: %s", ret, msg);
+        char description[MAX_PEER_DESCSTRLEN];
+        get_peer_description(&sock_info, description, sizeof(description));
+        LOG(LOG_LEVEL_INFO, "Socket %d: connection accepted from %s",
+            ret, description);
 
     }
 
@@ -1390,117 +1259,85 @@ g_sck_accept(int sck, char *addr, int addr_bytes, char *port, int port_bytes)
 
 /*****************************************************************************/
 
-void
-g_write_connection_description(int rcv_sck, char *description, int bytes)
-{
-    char *addr;
-    int port;
-    int ok;
-
-    union
-    {
-        struct sockaddr sock_addr;
-        struct sockaddr_in sock_addr_in;
-#if defined(XRDP_ENABLE_IPV6)
-        struct sockaddr_in6 sock_addr_in6;
-#endif
-        struct sockaddr_un sock_addr_un;
-    } sock_info;
-
-    ok = 0;
-    socklen_t sock_len = sizeof(sock_info);
-    memset(&sock_info, 0, sock_len);
-#if defined(XRDP_ENABLE_IPV6)
-    addr = (char *)g_malloc(INET6_ADDRSTRLEN, 1);
-#else
-    addr = (char *)g_malloc(INET_ADDRSTRLEN, 1);
-#endif
-
-    if (getpeername(rcv_sck, (struct sockaddr *)&sock_info, &sock_len) == 0)
-    {
-        switch (sock_info.sock_addr.sa_family)
-        {
-            case AF_INET:
-            {
-                struct sockaddr_in *sock_addr_in = &sock_info.sock_addr_in;
-                g_snprintf(addr, INET_ADDRSTRLEN, "%s", inet_ntoa(sock_addr_in->sin_addr));
-                port = ntohs(sock_addr_in->sin_port);
-                ok = 1;
-                break;
-            }
-
-#if defined(XRDP_ENABLE_IPV6)
-
-            case AF_INET6:
-            {
-                struct sockaddr_in6 *sock_addr_in6 = &sock_info.sock_addr_in6;
-                inet_ntop(sock_addr_in6->sin6_family,
-                          &sock_addr_in6->sin6_addr, addr, INET6_ADDRSTRLEN);
-                port = ntohs(sock_addr_in6->sin6_port);
-                ok = 1;
-                break;
-            }
-
-#endif
-
-            default:
-            {
-                break;
-            }
-
-        }
-
-        if (ok)
-        {
-            g_snprintf(description, bytes, "%s:%d - socket: %d", addr, port, rcv_sck);
-        }
-    }
-
-    if (!ok)
-    {
-        g_snprintf(description, bytes, "NULL:NULL - socket: %d", rcv_sck);
-    }
-
-    g_free(addr);
-}
-
-/*****************************************************************************/
-
-const char *g_get_ip_from_description(const char *description,
-                                      char *ip, int bytes)
+const char *
+g_sck_get_peer_ip_address(int sck,
+                          char *ip, unsigned int bytes,
+                          unsigned short *port)
 {
     if (bytes > 0)
     {
-        /* Look for the space after ip:port */
-        const char *end = g_strchr(description, ' ');
-        if (end == NULL)
+        int ok = 0;
+        union sock_info sock_info;
+
+        socklen_t sock_len = sizeof(sock_info);
+        memset(&sock_info, 0, sock_len);
+
+        if (getpeername(sck, (struct sockaddr *)&sock_info, &sock_len) == 0)
         {
-            end = description; /* Means we've failed */
-        }
-        else
-        {
-            /* Look back for the last ':' */
-            while (end > description && *end != ':')
+            int family = sock_info.sa.sa_family;
+            switch (family)
             {
-                --end;
+                case AF_INET:
+                {
+                    struct sockaddr_in *sa_in = &sock_info.sa_in;
+                    if (inet_ntop(family, &sa_in->sin_addr, ip, bytes) != NULL)
+                    {
+                        ok = 1;
+                        if (port != NULL)
+                        {
+                            *port = ntohs(sa_in->sin_port);
+                        }
+                    }
+                    break;
+                }
+
+#if defined(XRDP_ENABLE_IPV6)
+
+                case AF_INET6:
+                {
+                    struct sockaddr_in6 *sa_in6 = &sock_info.sa_in6;
+                    if (inet_ntop(family, &sa_in6->sin6_addr, ip, bytes) != NULL)
+                    {
+                        ok = 1;
+                        if (port != NULL)
+                        {
+                            *port = ntohs(sa_in6->sin6_port);
+                        }
+                    }
+                    break;
+                }
+
+#endif
+                default:
+                    break;
             }
         }
 
-        if (end == description)
+        if (!ok)
         {
-            g_snprintf(ip, bytes, "<unknown>");
-        }
-        else if ((end - description) < (bytes - 1))
-        {
-            g_strncpy(ip, description, end - description);
-        }
-        else
-        {
-            g_strncpy(ip, description, bytes - 1);
+            ip[0] = '\0';
         }
     }
 
     return ip;
+}
+
+/*****************************************************************************/
+
+const char *
+g_sck_get_peer_description(int sck,
+                           char *desc, unsigned int bytes)
+{
+    union sock_info sock_info;
+    socklen_t sock_len = sizeof(sock_info);
+    memset(&sock_info, 0, sock_len);
+
+    if (getpeername(sck, (struct sockaddr *)&sock_info, &sock_len) == 0)
+    {
+        get_peer_description(&sock_info, desc, bytes);
+    }
+
+    return desc;
 }
 
 /*****************************************************************************/
@@ -1516,6 +1353,13 @@ g_sleep(int msecs)
 
 /*****************************************************************************/
 int
+g_pipe(int fd[2])
+{
+    return pipe(fd);
+}
+
+/*****************************************************************************/
+int
 g_sck_last_error_would_block(int sck)
 {
 #if defined(_WIN32)
@@ -1527,7 +1371,7 @@ g_sck_last_error_would_block(int sck)
 
 /*****************************************************************************/
 int
-g_sck_recv(int sck, void *ptr, int len, int flags)
+g_sck_recv(int sck, void *ptr, unsigned int len, int flags)
 {
 #if defined(_WIN32)
     return recv(sck, (char *)ptr, len, flags);
@@ -1538,13 +1382,152 @@ g_sck_recv(int sck, void *ptr, int len, int flags)
 
 /*****************************************************************************/
 int
-g_sck_send(int sck, const void *ptr, int len, int flags)
+g_sck_send(int sck, const void *ptr, unsigned int len, int flags)
 {
 #if defined(_WIN32)
     return send(sck, (const char *)ptr, len, flags);
 #else
     return send(sck, ptr, len, flags);
 #endif
+}
+
+/*****************************************************************************/
+int
+g_sck_recv_fd_set(int sck, void *ptr, unsigned int len,
+                  int fds[], unsigned int maxfd,
+                  unsigned int *fdcount)
+{
+    int rv = -1;
+#if !defined(_WIN32)
+    // The POSIX API gives us no way to see how much ancillary data is
+    // present for recvmsg() - just use a big buffer.
+    //
+    // Use a union, so control_un.control is properly aligned.
+    union
+    {
+        struct cmsghdr cm;
+        unsigned char control[8192];
+    } control_un;
+    struct msghdr msg = {0};
+
+    *fdcount = 0;
+
+    /* Set up descriptor for vanilla data */
+    struct iovec iov[1] = { {ptr, len} };
+    msg.msg_iov = &iov[0];
+    msg.msg_iovlen = 1;
+
+    /* Add in the ancillary data buffer */
+    msg.msg_control = control_un.control;
+    msg.msg_controllen = sizeof(control_un.control);
+
+    if ((rv = recvmsg(sck, &msg, 0)) > 0)
+    {
+        struct cmsghdr *cmsg;
+        if ((msg.msg_flags & MSG_CTRUNC) != 0)
+        {
+            LOG(LOG_LEVEL_WARNING, "Ancillary data on recvmsg() was truncated");
+        }
+
+        // Iterate over the cmsghdr structures in the ancillary data
+        for (cmsg = CMSG_FIRSTHDR(&msg);
+                cmsg != NULL;
+                cmsg = CMSG_NXTHDR(&msg, cmsg))
+        {
+            if (cmsg->cmsg_level == SOL_SOCKET &&
+                    cmsg->cmsg_type == SCM_RIGHTS)
+            {
+                const unsigned char *data = CMSG_DATA(cmsg);
+                unsigned int data_len = cmsg->cmsg_len - CMSG_LEN(0);
+
+                // Check the data length doesn't point past the end of
+                // control_un.control (see below). This shouldn't happen,
+                // but is conceivable if the ancillary data is truncated
+                // and the OS doesn't handle that properly.
+                //
+                // <--  (sizeof(control_un.control)   -->
+                // +------------------------------------+
+                // |                                    |
+                // +------------------------------------+
+                // ^                       ^
+                // |                       | <- data_len ->
+                // |                       |
+                // control_un.control      data
+                unsigned int max_data_len =
+                    sizeof(control_un.control) - (data - control_un.control);
+                if (len > max_data_len)
+                {
+                    len = max_data_len;
+                }
+
+                // Process all the file descriptors in the structure
+                while (data_len >= sizeof(int))
+                {
+                    int fd;
+                    memcpy(&fd, data, sizeof(int));
+                    data += sizeof(int);
+                    data_len -= sizeof(int);
+
+                    if (*fdcount < maxfd)
+                    {
+                        fds[(*fdcount)++] = fd;
+                    }
+                    else
+                    {
+                        // No room in the user's buffer for this fd
+                        close(fd);
+                    }
+                }
+            }
+        }
+    }
+#endif /* !WIN32 */
+
+    return rv;
+}
+
+/*****************************************************************************/
+int
+g_sck_send_fd_set(int sck, const void *ptr, unsigned int len,
+                  int fds[], unsigned int fdcount)
+{
+    int rv = -1;
+#if !defined(_WIN32)
+    struct msghdr msg = {0};
+
+    /* Set up descriptor for vanilla data */
+    struct iovec iov[1] = { {(void *)ptr, len} };
+    msg.msg_iov = &iov[0];
+    msg.msg_iovlen = 1;
+
+    if (fdcount > 0)
+    {
+        unsigned int fdsize = sizeof(fds[0]) * fdcount; /* Payload size */
+        /* Allocate ancillary data structure */
+        msg.msg_controllen  = CMSG_SPACE(fdsize);
+        msg.msg_control = (struct cmsghdr *)g_malloc(msg.msg_controllen, 1);
+        if (msg.msg_control == NULL)
+        {
+            /* Memory allocation failure */
+            LOG(LOG_LEVEL_ERROR, "Error allocating buffer for %u fds",
+                fdcount);
+            return -1;
+        }
+
+        /* Fill in the ancillary data structure */
+        struct cmsghdr *cmptr = CMSG_FIRSTHDR(&msg);
+        cmptr->cmsg_len = CMSG_LEN(fdsize);
+        cmptr->cmsg_level = SOL_SOCKET;
+        cmptr->cmsg_type = SCM_RIGHTS;
+        memcpy(CMSG_DATA(cmptr), fds, fdsize);
+    }
+
+    rv = sendmsg(sck, &msg, 0);
+    g_free(msg.msg_control);
+
+#endif /* !WIN32 */
+
+    return rv;
 }
 
 /*****************************************************************************/
@@ -1574,26 +1557,24 @@ g_sck_socket_ok(int sck)
 int
 g_sck_can_send(int sck, int millis)
 {
-    fd_set wfds;
-    struct timeval time;
-    int rv;
-
-    time.tv_sec = millis / 1000;
-    time.tv_usec = (millis * 1000) % 1000000;
-    FD_ZERO(&wfds);
-
+    int rv = 0;
     if (sck > 0)
     {
-        FD_SET(((unsigned int)sck), &wfds);
-        rv = select(sck + 1, 0, &wfds, 0, &time);
+        struct pollfd pollfd;
 
-        if (rv > 0)
+        pollfd.fd = sck;
+        pollfd.events = POLLOUT;
+        pollfd.revents = 0;
+        if (poll(&pollfd, 1, millis) > 0)
         {
-            return 1;
+            if ((pollfd.revents & POLLOUT) != 0)
+            {
+                rv = 1;
+            }
         }
     }
 
-    return 0;
+    return rv;
 }
 
 /*****************************************************************************/
@@ -1602,77 +1583,64 @@ g_sck_can_send(int sck, int millis)
 int
 g_sck_can_recv(int sck, int millis)
 {
-    fd_set rfds;
-    struct timeval time;
-    int rv;
-
-    g_memset(&time, 0, sizeof(time));
-    time.tv_sec = millis / 1000;
-    time.tv_usec = (millis * 1000) % 1000000;
-    FD_ZERO(&rfds);
+    int rv = 0;
 
     if (sck > 0)
     {
-        FD_SET(((unsigned int)sck), &rfds);
-        rv = select(sck + 1, &rfds, 0, 0, &time);
+        struct pollfd pollfd;
 
-        if (rv > 0)
+        pollfd.fd = sck;
+        pollfd.events = POLLIN;
+        pollfd.revents = 0;
+        if (poll(&pollfd, 1, millis) > 0)
         {
-            return 1;
+            if ((pollfd.revents & (POLLIN | POLLHUP)) != 0)
+            {
+                rv = 1;
+            }
         }
     }
 
-    return 0;
+    return rv;
 }
 
 /*****************************************************************************/
 int
 g_sck_select(int sck1, int sck2)
 {
-    fd_set rfds;
-    struct timeval time;
-    int max;
-    int rv;
+    struct pollfd pollfd[2] = {0};
+    int rvmask[2] = {0}; /* Output masks corresponding to fds in pollfd */
 
-    g_memset(&time, 0, sizeof(struct timeval));
-    FD_ZERO(&rfds);
+    unsigned int i = 0;
+    int rv = 0;
 
     if (sck1 > 0)
     {
-        FD_SET(((unsigned int)sck1), &rfds);
+        pollfd[i].fd = sck1;
+        pollfd[i].events = POLLIN;
+        rvmask[i] = 1;
+        ++i;
     }
 
     if (sck2 > 0)
     {
-        FD_SET(((unsigned int)sck2), &rfds);
+        pollfd[i].fd = sck2;
+        pollfd[i].events = POLLIN;
+        rvmask[i] = 2;
+        ++i;
     }
 
-    max = sck1;
-
-    if (sck2 > max)
+    if (poll(pollfd, i, 0) > 0)
     {
-        max = sck2;
-    }
-
-    rv = select(max + 1, &rfds, 0, 0, &time);
-
-    if (rv > 0)
-    {
-        rv = 0;
-
-        if (FD_ISSET(((unsigned int)sck1), &rfds))
+        if ((pollfd[0].revents & (POLLIN | POLLHUP)) != 0)
         {
-            rv = rv | 1;
+            rv |= rvmask[0];
         }
 
-        if (FD_ISSET(((unsigned int)sck2), &rfds))
+        if ((pollfd[1].revents & (POLLIN | POLLHUP)) != 0)
         {
-            rv = rv | 2;
+            rv |= rvmask[1];
         }
-    }
-    else
-    {
-        rv = 0;
     }
 
     return rv;
@@ -1683,19 +1651,24 @@ g_sck_select(int sck1, int sck2)
 static int
 g_fd_can_read(int fd)
 {
-    fd_set rfds;
-    struct timeval time;
-    int rv;
-
-    g_memset(&time, 0, sizeof(time));
-    FD_ZERO(&rfds);
-    FD_SET(((unsigned int)fd), &rfds);
-    rv = select(fd + 1, &rfds, 0, 0, &time);
-    if (rv == 1)
+    int rv = 0;
+    if (fd > 0)
     {
-        return 1;
+        struct pollfd pollfd;
+
+        pollfd.fd = fd;
+        pollfd.events = POLLIN;
+        pollfd.revents = 0;
+        if (poll(&pollfd, 1, 0) > 0)
+        {
+            if ((pollfd.revents & (POLLIN | POLLHUP)) != 0)
+            {
+                rv = 1;
+            }
+        }
     }
-    return 0;
+
+    return rv;
 }
 
 /*****************************************************************************/
@@ -1756,6 +1729,8 @@ g_create_wait_obj(const char *name)
         close(fds[1]);
         return 0;
     }
+    g_file_set_cloexec(fds[0], 1);
+    g_file_set_cloexec(fds[1], 1);
     return (fds[1] << 16) | fds[0];
 #endif
 }
@@ -1811,12 +1786,7 @@ int
 g_set_wait_obj(tintptr obj)
 {
 #ifdef _WIN32
-    if (obj == 0)
-    {
-        return 0;
-    }
-    SetEvent((HANDLE)obj);
-    return 0;
+#error "Win32 is no longer supported."
 #else
     int error;
     int fd;
@@ -1828,7 +1798,7 @@ g_set_wait_obj(tintptr obj)
     {
         return 0;
     }
-    fd = obj & 0xffff;
+    fd = obj & USHRT_MAX;
     if (g_fd_can_read(fd))
     {
         /* already signalled */
@@ -1967,8 +1937,9 @@ int
 g_obj_wait(tintptr *read_objs, int rcount, tintptr *write_objs, int wcount,
            int mstimeout)
 {
+#define MAX_HANDLES 256
 #ifdef _WIN32
-    HANDLE handles[256];
+    HANDLE handles[MAX_HANDLES];
     DWORD count;
     DWORD error;
     int j;
@@ -1987,7 +1958,7 @@ g_obj_wait(tintptr *read_objs, int rcount, tintptr *write_objs, int wcount,
         handles[j++] = (HANDLE)(write_objs[i]);
     }
 
-    if (mstimeout < 1)
+    if (mstimeout < 0)
     {
         mstimeout = INFINITE;
     }
@@ -2001,96 +1972,73 @@ g_obj_wait(tintptr *read_objs, int rcount, tintptr *write_objs, int wcount,
 
     return 0;
 #else
-    fd_set rfds;
-    fd_set wfds;
-    struct timeval time;
-    struct timeval *ptime;
+    struct pollfd pollfd[MAX_HANDLES];
+    int sck;
     int i = 0;
-    int res = 0;
-    int max = 0;
-    int sck = 0;
+    unsigned int j = 0;
+    int rv = 1;
 
-    max = 0;
-    if (mstimeout < 1)
+    if (read_objs == NULL && rcount != 0)
     {
-        ptime = 0;
+        LOG(LOG_LEVEL_ERROR, "Programming error read_objs is null");
+    }
+    else if (write_objs == NULL && wcount != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Programming error write_objs is null");
+    }
+    /* Check carefully for int overflow in passed-in counts */
+    else if ((unsigned int)rcount > MAX_HANDLES ||
+             (unsigned int)wcount > MAX_HANDLES ||
+             ((unsigned int)rcount + (unsigned int)wcount) > MAX_HANDLES)
+    {
+        LOG(LOG_LEVEL_ERROR, "Programming error too many handles");
     }
     else
     {
-        g_memset(&time, 0, sizeof(struct timeval));
-        time.tv_sec = mstimeout / 1000;
-        time.tv_usec = (mstimeout % 1000) * 1000;
-        ptime = &time;
-    }
+        if (mstimeout < 0)
+        {
+            mstimeout = -1;
+        }
 
-    FD_ZERO(&rfds);
-    FD_ZERO(&wfds);
-
-    /* Find the highest descriptor number in read_obj */
-    if (read_objs != NULL)
-    {
-        for (i = 0; i < rcount; i++)
+        for (i = 0; i < rcount ; ++i)
         {
             sck = read_objs[i] & 0xffff;
-
             if (sck > 0)
             {
-                FD_SET(sck, &rfds);
+                pollfd[j].fd = sck;
+                pollfd[j].events = POLLIN;
+                ++j;
+            }
+        }
 
-                if (sck > max)
-                {
-                    max = sck; /* max holds the highest socket/descriptor number */
-                }
+        for (i = 0; i < wcount; ++i)
+        {
+            sck = write_objs[i];
+            if (sck > 0)
+            {
+                pollfd[j].fd = sck;
+                pollfd[j].events = POLLOUT;
+                ++j;
+            }
+        }
+
+        rv = (poll(pollfd, j, mstimeout) < 0);
+        if (rv != 0)
+        {
+            /* these are not really errors */
+            if ((errno == EAGAIN) ||
+                    (errno == EWOULDBLOCK) ||
+                    (errno == EINPROGRESS) ||
+                    (errno == EINTR)) /* signal occurred */
+            {
+                rv = 0;
             }
         }
     }
-    else if (rcount > 0)
-    {
-        LOG(LOG_LEVEL_ERROR, "Programming error read_objs is null");
-        return 1; /* error */
-    }
 
-    if (write_objs != NULL)
-    {
-        for (i = 0; i < wcount; i++)
-        {
-            sck = (int)(write_objs[i]);
-
-            if (sck > 0)
-            {
-                FD_SET(sck, &wfds);
-
-                if (sck > max)
-                {
-                    max = sck; /* max holds the highest socket/descriptor number */
-                }
-            }
-        }
-    }
-    else if (wcount > 0)
-    {
-        LOG(LOG_LEVEL_ERROR, "Programming error write_objs is null");
-        return 1; /* error */
-    }
-
-    res = select(max + 1, &rfds, &wfds, 0, ptime);
-
-    if (res < 0)
-    {
-        /* these are not really errors */
-        if ((errno == EAGAIN) ||
-                (errno == EWOULDBLOCK) ||
-                (errno == EINPROGRESS) ||
-                (errno == EINTR)) /* signal occurred */
-        {
-            return 0;
-        }
-
-        return 1; /* error */
-    }
-
-    return 0;
+    return rv;
 #endif
+#undef MAX_HANDLES
 }
 
 /*****************************************************************************/
@@ -2148,24 +2096,14 @@ g_memcmp(const void *s1, const void *s2, int len)
 /*****************************************************************************/
 /* returns -1 on error, else return handle or file descriptor */
 int
-g_file_open(const char *file_name)
+g_file_open_rw(const char *file_name)
 {
 #if defined(_WIN32)
     return (int)CreateFileA(file_name, GENERIC_READ | GENERIC_WRITE,
                             FILE_SHARE_READ | FILE_SHARE_WRITE,
                             0, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
 #else
-    int rv;
-
-    rv =  open(file_name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-
-    if (rv == -1)
-    {
-        /* can't open read / write, try to open read only */
-        rv =  open(file_name, O_RDONLY);
-    }
-
-    return rv;
+    return open(file_name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
 #endif
 }
 
@@ -2208,6 +2146,14 @@ g_file_open_ex(const char *file_name, int aread, int awrite,
 }
 
 /*****************************************************************************/
+/* returns -1 on error, else return handle or file descriptor */
+int
+g_file_open_ro(const char *file_name)
+{
+    return g_file_open_ex(file_name, 1, 0, 0, 0);
+}
+
+/*****************************************************************************/
 /* returns error, always 0 */
 int
 g_file_close(int fd)
@@ -2218,6 +2164,13 @@ g_file_close(int fd)
     close(fd);
 #endif
     return 0;
+}
+
+/*****************************************************************************/
+int
+g_file_is_open(int fd)
+{
+    return (fcntl(fd, F_GETFD) >= 0);
 }
 
 /*****************************************************************************/
@@ -2312,6 +2265,200 @@ g_file_lock(int fd, int start, int len)
 }
 
 /*****************************************************************************/
+/* Gets the close-on-exec flag for a file descriptor */
+int
+g_file_get_cloexec(int fd)
+{
+    int rv = 0;
+    int flags = fcntl(fd, F_GETFD);
+    if (flags >= 0 && (flags & FD_CLOEXEC) != 0)
+    {
+        rv = 1;
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+/* Sets/clears the close-on-exec flag for a file descriptor */
+/* return boolean */
+int
+g_file_set_cloexec(int fd, int status)
+{
+    int rv = 0;
+    int current_flags = fcntl(fd, F_GETFD);
+    if (current_flags >= 0)
+    {
+        int new_flags;
+        if (status)
+        {
+            new_flags = current_flags | FD_CLOEXEC;
+        }
+        else
+        {
+            new_flags = current_flags & ~FD_CLOEXEC;
+        }
+        if (new_flags != current_flags)
+        {
+            rv = (fcntl(fd, F_SETFD, new_flags) >= 0);
+        }
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
+struct list *
+g_get_open_fds(int min, int max)
+{
+    struct list *result = list_create();
+
+    if (result != NULL)
+    {
+        if (max < 0)
+        {
+            max = sysconf(_SC_OPEN_MAX);
+        }
+
+        if (max > min)
+        {
+            struct pollfd *fds = g_new0(struct pollfd, max - min);
+            int i;
+
+            if (fds == NULL)
+            {
+                goto nomem;
+            }
+
+            for (i = min ; i < max ; ++i)
+            {
+                fds[i - min].fd = i;
+            }
+
+            if (poll(fds, max - min, 0) >= 0)
+            {
+                for (i = min ; i < max ; ++i)
+                {
+                    if (fds[i - min].revents != POLLNVAL)
+                    {
+                        // Descriptor is open
+                        if (!list_add_item(result, i))
+                        {
+                            goto nomem;
+                        }
+                    }
+                }
+            }
+            g_free(fds);
+        }
+    }
+
+    return result;
+
+nomem:
+    list_delete(result);
+    return NULL;
+}
+
+/*****************************************************************************/
+int
+g_file_map(int fd, int aread, int awrite, size_t length, void **addr)
+{
+    int prot = 0;
+    void *laddr;
+
+    if (aread)
+    {
+        prot |= PROT_READ;
+    }
+    if (awrite)
+    {
+        prot |= PROT_WRITE;
+    }
+    laddr = mmap(NULL, length, prot, MAP_SHARED, fd, 0);
+    if (laddr == MAP_FAILED)
+    {
+        return 1;
+    }
+    *addr = laddr;
+    return 0;
+}
+
+/*****************************************************************************/
+int
+g_munmap(void *addr, size_t length)
+{
+    return munmap(addr, length);
+}
+
+/*****************************************************************************/
+/* Converts a hex mask to a mode_t value */
+#if !defined(_WIN32)
+static mode_t
+hex_to_mode_t(int hex)
+{
+    mode_t mode = 0;
+
+    mode |= (hex & 0x4000) ? S_ISUID : 0;
+    mode |= (hex & 0x2000) ? S_ISGID : 0;
+    mode |= (hex & 0x1000) ? S_ISVTX : 0;
+    mode |= (hex & 0x0400) ? S_IRUSR : 0;
+    mode |= (hex & 0x0200) ? S_IWUSR : 0;
+    mode |= (hex & 0x0100) ? S_IXUSR : 0;
+    mode |= (hex & 0x0040) ? S_IRGRP : 0;
+    mode |= (hex & 0x0020) ? S_IWGRP : 0;
+    mode |= (hex & 0x0010) ? S_IXGRP : 0;
+    mode |= (hex & 0x0004) ? S_IROTH : 0;
+    mode |= (hex & 0x0002) ? S_IWOTH : 0;
+    mode |= (hex & 0x0001) ? S_IXOTH : 0;
+    return mode;
+}
+#endif
+
+/*****************************************************************************/
+/* Converts a mode_t value to a hex mask */
+#if !defined(_WIN32)
+static int
+mode_t_to_hex(mode_t mode)
+{
+    int hex = 0;
+
+    hex |= (mode & S_ISUID) ?  0x4000 : 0;
+    hex |= (mode & S_ISGID) ?  0x2000 : 0;
+    hex |= (mode & S_ISVTX) ?  0x1000 : 0;
+    hex |= (mode & S_IRUSR) ?  0x0400 : 0;
+    hex |= (mode & S_IWUSR) ?  0x0200 : 0;
+    hex |= (mode & S_IXUSR) ?  0x0100 : 0;
+    hex |= (mode & S_IRGRP) ?  0x0040 : 0;
+    hex |= (mode & S_IWGRP) ?  0x0020 : 0;
+    hex |= (mode & S_IXGRP) ?  0x0010 : 0;
+    hex |= (mode & S_IROTH) ?  0x0004 : 0;
+    hex |= (mode & S_IWOTH) ?  0x0002 : 0;
+    hex |= (mode & S_IXOTH) ?  0x0001 : 0;
+
+    return hex;
+}
+#endif
+
+/*****************************************************************************/
+/* Duplicates a file descriptor onto another one using the semantics
+ * of dup2() */
+/* return boolean */
+int
+g_file_duplicate_on(int fd, int target_fd)
+{
+    int rv = (dup2(fd, target_fd) >= 0);
+
+    if (rv < 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Can't clone file %d as file %d [%s]",
+            fd, target_fd, g_get_strerror());
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
 /* returns error */
 int
 g_chmod_hex(const char *filename, int flags)
@@ -2319,22 +2466,22 @@ g_chmod_hex(const char *filename, int flags)
 #if defined(_WIN32)
     return 0;
 #else
-    int fl;
+    mode_t m = hex_to_mode_t(flags);
+    return chmod(filename, m);
+#endif
+}
 
-    fl = 0;
-    fl |= (flags & 0x4000) ? S_ISUID : 0;
-    fl |= (flags & 0x2000) ? S_ISGID : 0;
-    fl |= (flags & 0x1000) ? S_ISVTX : 0;
-    fl |= (flags & 0x0400) ? S_IRUSR : 0;
-    fl |= (flags & 0x0200) ? S_IWUSR : 0;
-    fl |= (flags & 0x0100) ? S_IXUSR : 0;
-    fl |= (flags & 0x0040) ? S_IRGRP : 0;
-    fl |= (flags & 0x0020) ? S_IWGRP : 0;
-    fl |= (flags & 0x0010) ? S_IXGRP : 0;
-    fl |= (flags & 0x0004) ? S_IROTH : 0;
-    fl |= (flags & 0x0002) ? S_IWOTH : 0;
-    fl |= (flags & 0x0001) ? S_IXOTH : 0;
-    return chmod(filename, fl);
+/*****************************************************************************/
+/* returns error */
+int
+g_umask_hex(int flags)
+{
+#if defined(_WIN32)
+    return flags;
+#else
+    mode_t m = hex_to_mode_t(flags);
+    m = umask(m);
+    return mode_t_to_hex(m);
 #endif
 }
 
@@ -2447,6 +2594,14 @@ g_directory_exist(const char *dirname)
 }
 
 /*****************************************************************************/
+/* returns boolean, non zero if the file exists  and is a readable executable */
+int
+g_executable_exist(const char *exename)
+{
+    return access(exename, R_OK | X_OK) == 0;
+}
+
+/*****************************************************************************/
 /* returns boolean */
 int
 g_create_dir(const char *dirname)
@@ -2454,7 +2609,7 @@ g_create_dir(const char *dirname)
 #if defined(_WIN32)
     return CreateDirectoryA(dirname, 0); // test this
 #else
-    return mkdir(dirname, (mode_t) - 1) == 0;
+    return mkdir(dirname, 0777) == 0;
 #endif
 }
 
@@ -2638,7 +2793,7 @@ g_get_proc_address(long lib, const char *name)
 /*****************************************************************************/
 /* does not work in win32 */
 int
-g_system(char *aexec)
+g_system(const char *aexec)
 {
 #if defined(_WIN32)
     return 0;
@@ -2695,21 +2850,45 @@ g_execvp(const char *p1, char *args[])
     g_strnjoin(args_str, ARGS_STR_LEN, " ", (const char **) args, args_len);
 
     LOG(LOG_LEVEL_DEBUG,
-        "Calling exec (executable: %s, arguments: %s)",
+        "Calling exec (excutable: %s, arguments: %s)",
         p1, args_str);
 
-    g_rm_temp_dir();
     rv = execvp(p1, args);
 
     /* should not get here */
+    int saved_errno = errno;
+
     LOG(LOG_LEVEL_ERROR,
-        "Error calling exec (executable: %s, arguments: %s) "
+        "Error calling exec (excutable: %s, arguments: %s) "
         "returned errno: %d, description: %s",
         p1, args_str, g_get_errno(), g_get_strerror());
 
-    g_mk_socket_path(0);
+    errno = saved_errno;
     return rv;
 #endif
+}
+
+/*****************************************************************************/
+int
+g_execvp_list(const char *file, struct list *argv)
+{
+    int rv = -1;
+
+    /* Push a terminating NULL onto the list for the system call */
+    if (!list_add_item(argv, (tintptr)NULL))
+    {
+        LOG(LOG_LEVEL_ERROR, "No memory for exec to terminate list");
+        errno = ENOMEM;
+    }
+    else
+    {
+        /* Read the argv argument straight from the list */
+        rv = g_execvp(file, (char **)argv->items);
+
+        /* should not get here */
+        list_remove_item(argv, argv->count - 1); // Lose terminating NULL
+    }
+    return rv;
 }
 
 /*****************************************************************************/
@@ -2739,7 +2918,40 @@ g_execlp3(const char *a1, const char *a2, const char *a3)
         "returned errno: %d, description: %s",
         a1, args_str, g_get_errno(), g_get_strerror());
 
-    g_mk_socket_path(0);
+    return rv;
+#endif
+}
+
+/*****************************************************************************/
+/* does not work in win32 */
+unsigned int
+g_set_alarm(void (*func)(int), unsigned int secs)
+{
+#if defined(_WIN32)
+    return 0;
+#else
+    struct sigaction action;
+
+    /* Cancel any previous alarm to prevent a race */
+    unsigned int rv = alarm(0);
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGALRM, &action, NULL);
+    if (func != NULL && secs > 0)
+    {
+        (void)alarm(secs);
+    }
     return rv;
 #endif
 }
@@ -2751,7 +2963,22 @@ g_signal_child_stop(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGCHLD, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        // Don't need to know when children are stopped or started
+        action.sa_flags = (SA_RESTART | SA_NOCLDSTOP);
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGCHLD, &action, NULL);
 #endif
 }
 
@@ -2762,7 +2989,21 @@ g_signal_segfault(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGSEGV, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESETHAND; // This is a one-shot
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGSEGV, &action, NULL);
 #endif
 }
 
@@ -2773,7 +3014,21 @@ g_signal_hang_up(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGHUP, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGHUP, &action, NULL);
 #endif
 }
 
@@ -2784,7 +3039,21 @@ g_signal_user_interrupt(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGINT, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGINT, &action, NULL);
 #endif
 }
 
@@ -2795,7 +3064,21 @@ g_signal_terminate(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGTERM, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGTERM, &action, NULL);
 #endif
 }
 
@@ -2806,7 +3089,21 @@ g_signal_pipe(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGPIPE, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGPIPE, &action, NULL);
 #endif
 }
 
@@ -2817,7 +3114,21 @@ g_signal_usr1(void (*func)(int))
 {
 #if defined(_WIN32)
 #else
-    signal(SIGUSR1, func);
+    struct sigaction action;
+
+    if (func == NULL)
+    {
+        action.sa_handler = SIG_DFL;
+        action.sa_flags = 0;
+    }
+    else
+    {
+        action.sa_handler = func;
+        action.sa_flags = SA_RESTART;
+    }
+    sigemptyset (&action.sa_mask);
+
+    sigaction(SIGUSR1, &action, NULL);
 #endif
 }
 
@@ -2833,11 +3144,7 @@ g_fork(void)
 
     rv = fork();
 
-    if (rv == 0) /* child */
-    {
-        g_mk_socket_path(0);
-    }
-    else if (rv == -1) /* error */
+    if (rv == -1) /* error */
     {
         LOG(LOG_LEVEL_ERROR,
             "Process fork failed with errno: %d, description: %s",
@@ -2864,12 +3171,18 @@ g_setgid(int pid)
 /* returns error, zero is success, non zero is error */
 /* does not work in win32 */
 int
-g_initgroups(const char *user, int gid)
+g_initgroups(const char *username)
 {
 #if defined(_WIN32)
     return 0;
 #else
-    return initgroups(user, gid);
+    int gid;
+    int error = g_getuser_info_by_name(username, NULL, &gid, NULL, NULL, NULL);
+    if (error == 0)
+    {
+        error = initgroups(username, gid);
+    }
+    return error;
 #endif
 }
 
@@ -2946,10 +3259,37 @@ g_setlogin(const char *name)
 }
 
 /*****************************************************************************/
-/* does not work in win32
-   returns pid of process that exits or zero if signal occurred */
+#ifdef HAVE_SETUSERCONTEXT
 int
-g_waitchild(void)
+g_set_allusercontext(int uid)
+{
+    int rv;
+    struct passwd *pwd = getpwuid(uid);
+    if (pwd == NULL)
+    {
+        LOG(LOG_LEVEL_ERROR, "No password entry for UID %d", uid);
+        rv = 1;
+    }
+    else
+    {
+        rv = setusercontext(NULL, pwd, uid, LOGIN_SETALL);
+        if (rv != 0)
+        {
+            LOG(LOG_LEVEL_ERROR, "setusercontext(%d) failed [%s]",
+                uid, g_get_strerror());
+        }
+    }
+
+    return (rv != 0);  /* Return 0 or 1 */
+}
+#endif
+/*****************************************************************************/
+/* does not work in win32
+   returns pid of process that exits or zero if signal occurred
+   an exit_status struct can optionally be passed in to get the
+   exit status of the child */
+int
+g_waitchild(struct exit_status *e)
 {
 #if defined(_WIN32)
     return 0;
@@ -2957,14 +3297,35 @@ g_waitchild(void)
     int wstat;
     int rv;
 
-    rv = waitpid(0, &wstat, WNOHANG);
+    struct exit_status dummy;
+
+    if (e == NULL)
+    {
+        e = &dummy;  // Set this, then throw it away
+    }
+
+    e->reason = E_XR_UNEXPECTED;
+    e->val = 0;
+
+    rv = waitpid(-1, &wstat, WNOHANG);
 
     if (rv == -1)
     {
-        if (errno == EINTR) /* signal occurred */
+        if (errno == EINTR)
         {
+            /* This shouldn't happen as signal handlers use SA_RESTART */
             rv = 0;
         }
+    }
+    else if (WIFEXITED(wstat))
+    {
+        e->reason = E_XR_STATUS_CODE;
+        e->val = WEXITSTATUS(wstat);
+    }
+    else if (WIFSIGNALED(wstat))
+    {
+        e->reason = E_XR_SIGNAL;
+        e->val = WTERMSIG(wstat);
     }
 
     return rv;
@@ -2973,7 +3334,10 @@ g_waitchild(void)
 
 /*****************************************************************************/
 /* does not work in win32
-   returns pid of process that exits or <= 0 if no process was found */
+   returns pid of process that exits or <= 0 if no process was found
+
+   Note that signal handlers are established with BSD-style semantics,
+   so this call is NOT interrupted by a signal  */
 int
 g_waitpid(int pid)
 {
@@ -2997,25 +3361,21 @@ g_waitpid(int pid)
 
 /*****************************************************************************/
 /* does not work in win32
-   returns exit status code of child process with pid */
+   returns exit status code of child process with pid
+
+   Note that signal handlers are established with BSD-style semantics,
+   so this call is NOT interrupted by a signal  */
 struct exit_status
 g_waitpid_status(int pid)
 {
-    struct exit_status exit_status;
+    struct exit_status exit_status = {.reason = E_XR_UNEXPECTED, .val = 0};
 
-#if defined(_WIN32)
-    exit_status.exit_code = -1;
-    exit_status.signal_no = 0;
-    return exit_status;
-#else
-    int rv;
-    int status;
-
-    exit_status.exit_code = -1;
-    exit_status.signal_no = 0;
-
+#if !defined(_WIN32)
     if (pid > 0)
     {
+        int rv;
+        int status;
+
         LOG(LOG_LEVEL_DEBUG, "waiting for pid %d to exit", pid);
         rv = waitpid(pid, &status, 0);
 
@@ -3023,11 +3383,13 @@ g_waitpid_status(int pid)
         {
             if (WIFEXITED(status))
             {
-                exit_status.exit_code = WEXITSTATUS(status);
+                exit_status.reason = E_XR_STATUS_CODE;
+                exit_status.val = WEXITSTATUS(status);
             }
             if (WIFSIGNALED(status))
             {
-                exit_status.signal_no = WTERMSIG(status);
+                exit_status.reason = E_XR_SIGNAL;
+                exit_status.val = WTERMSIG(status);
             }
         }
         else
@@ -3036,8 +3398,26 @@ g_waitpid_status(int pid)
         }
     }
 
-    return exit_status;
 #endif
+    return exit_status;
+}
+
+/*****************************************************************************/
+int
+g_setpgid(int pid, int pgid)
+{
+    int rv = setpgid(pid, pgid);
+    if (rv < 0)
+    {
+        if (pid == 0)
+        {
+            pid = getpid();
+        }
+        LOG(LOG_LEVEL_ERROR, "Can't set process group ID of %d to %d [%s]",
+            pid, pgid, g_get_strerror());
+    }
+
+    return rv;
 }
 
 /*****************************************************************************/
@@ -3045,13 +3425,15 @@ g_waitpid_status(int pid)
 void
 g_clearenv(void)
 {
-#if defined(_WIN32)
-#else
-#if defined(BSD)
+#if defined(HAVE_CLEARENV)
+    clearenv();
+#elif defined(_WIN32)
+#elif defined(BSD)
+    extern char **environ;
     environ[0] = 0;
 #else
+    extern char **environ;
     environ = 0;
-#endif
 #endif
 }
 
@@ -3111,40 +3493,106 @@ g_sigterm(int pid)
 }
 
 /*****************************************************************************/
+/* does not work in win32 */
+int
+g_sighup(int pid)
+{
+#if defined(_WIN32)
+    return 0;
+#else
+    return kill(pid, SIGHUP);
+#endif
+}
+
+/*****************************************************************************/
 /* returns 0 if ok */
 /* the caller is responsible to free the buffs */
 /* does not work in win32 */
 int
-g_getuser_info(const char *username, int *gid, int *uid, char **shell,
-               char **dir, char **gecos)
+g_getuser_info_by_name(const char *username, int *uid, int *gid,
+                       char **shell, char **dir, char **gecos)
+{
+    int rv = 1;
+#if !defined(_WIN32)
+
+    if (username == NULL)
+    {
+        LOG(LOG_LEVEL_ERROR, "g_getuser_info_by_name() called for NULL user");
+    }
+    else
+    {
+        struct passwd *pwd_1 = getpwnam(username);
+
+        if (pwd_1 != 0)
+        {
+            rv = 0;
+
+            if (uid != 0)
+            {
+                *uid = pwd_1->pw_uid;
+            }
+
+            if (gid != 0)
+            {
+                *gid = pwd_1->pw_gid;
+            }
+
+            if (shell != 0)
+            {
+                *shell = g_strdup(pwd_1->pw_shell);
+            }
+
+            if (dir != 0)
+            {
+                *dir = g_strdup(pwd_1->pw_dir);
+            }
+
+            if (gecos != 0)
+            {
+                *gecos = g_strdup(pwd_1->pw_gecos);
+            }
+        }
+    }
+#endif
+    return rv;
+}
+
+
+/*****************************************************************************/
+/* returns 0 if ok */
+/* the caller is responsible to free the buffs */
+/* does not work in win32 */
+int
+g_getuser_info_by_uid(int uid, char **username, int *gid,
+                      char **shell, char **dir, char **gecos)
 {
 #if defined(_WIN32)
     return 1;
 #else
     struct passwd *pwd_1;
 
-    pwd_1 = getpwnam(username);
+    pwd_1 = getpwuid(uid);
 
     if (pwd_1 != 0)
     {
+        if (username != NULL)
+        {
+            *username = g_strdup(pwd_1->pw_name);
+        }
+
         if (gid != 0)
         {
             *gid = pwd_1->pw_gid;
         }
 
-        if (uid != 0)
+        if (shell != 0)
         {
-            *uid = pwd_1->pw_uid;
+            *shell = g_strdup(pwd_1->pw_shell);
         }
 
         if (dir != 0)
         {
             *dir = g_strdup(pwd_1->pw_dir);
-        }
-
-        if (shell != 0)
-        {
-            *shell = g_strdup(pwd_1->pw_shell);
         }
 
         if (gecos != 0)
@@ -3187,42 +3635,95 @@ g_getgroup_info(const char *groupname, int *gid)
 }
 
 /*****************************************************************************/
-/* returns error */
-/* if zero is returned, then ok is set */
-/* does not work in win32 */
+#ifdef HAVE_GETGROUPLIST
+int
+g_check_user_in_group(const char *username, int gid, int *ok)
+{
+    int rv = 1;
+    struct passwd *pwd_1 = getpwnam(username);
+    if (pwd_1 != NULL)
+    {
+        // Get number of groups for user
+        //
+        // Some implementations of getgrouplist() (i.e. muslc) don't
+        // allow ngroups to be <1 on entry
+        int ngroups = 1;
+        GETGROUPS_T dummy;
+        getgrouplist(username, pwd_1->pw_gid, &dummy, &ngroups);
+
+        if (ngroups > 0) // Should always be true
+        {
+            GETGROUPS_T *grouplist;
+            grouplist = (GETGROUPS_T *)malloc(ngroups * sizeof(grouplist[0]));
+            if (grouplist != NULL)
+            {
+                // Now get the actual groups. The number of groups returned
+                // by this call is not necessarily the same as the number
+                // returned by the first call.
+                int allocgroups = ngroups;
+                getgrouplist(username, pwd_1->pw_gid, grouplist, &ngroups);
+                ngroups = MIN(ngroups, allocgroups);
+
+                rv = 0;
+                *ok = 0;
+
+                int i;
+                for (i = 0 ; i < ngroups; ++i)
+                {
+                    if (grouplist[i] == (GETGROUPS_T)gid)
+                    {
+                        *ok = 1;
+                        break;
+                    }
+                }
+                free(grouplist);
+            }
+        }
+    }
+    return rv;
+}
+/*****************************************************************************/
+#else // HAVE_GETGROUPLIST
 int
 g_check_user_in_group(const char *username, int gid, int *ok)
 {
 #if defined(_WIN32)
     return 1;
 #else
-    struct group *groups;
     int i;
 
-    groups = getgrgid(gid);
-
-    if (groups == 0)
+    struct passwd *pwd_1 = getpwnam(username);
+    struct group *groups = getgrgid(gid);
+    if (pwd_1 == NULL || groups == NULL)
     {
         return 1;
     }
 
-    *ok = 0;
-    i = 0;
-
-    while (0 != groups->gr_mem[i])
+    if (pwd_1->pw_gid == gid)
     {
-        if (0 == g_strcmp(groups->gr_mem[i], username))
-        {
-            *ok = 1;
-            break;
-        }
+        *ok = 1;
+    }
+    else
+    {
+        *ok = 0;
+        i = 0;
 
-        i++;
+        while (0 != groups->gr_mem[i])
+        {
+            if (0 == g_strcmp(groups->gr_mem[i], username))
+            {
+                *ok = 1;
+                break;
+            }
+
+            i++;
+        }
     }
 
     return 0;
 #endif
 }
+#endif // HAVE_GETGROUPLIST
 
 /*****************************************************************************/
 /* returns the time since the Epoch (00:00:00 UTC, January 1, 1970),
@@ -3665,4 +4166,28 @@ g_tcp6_bind_address(int sck, const char *port, const char *address)
 #else
     return -1;
 #endif
+}
+
+/*****************************************************************************/
+/* returns error, zero is success, non zero is error */
+/* only works in linux */
+int
+g_no_new_privs(void)
+{
+#if defined(HAVE_SYS_PRCTL_H) && defined(PR_SET_NO_NEW_PRIVS)
+    /*
+     * PR_SET_NO_NEW_PRIVS requires Linux kernel 3.5 and newer.
+     */
+    return prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+#else
+    return 0;
+#endif
+}
+
+/*****************************************************************************/
+void
+g_qsort(void *base, size_t nitems, size_t size,
+        int (*compar)(const void *, const void *))
+{
+    qsort(base, nitems, size, compar);
 }

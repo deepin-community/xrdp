@@ -360,7 +360,6 @@ struct xrdp_rdp *
 xrdp_rdp_create(struct xrdp_session *session, struct trans *trans)
 {
     struct xrdp_rdp *self = (struct xrdp_rdp *)NULL;
-    int bytes;
 
     LOG_DEVEL(LOG_LEVEL_TRACE, "in xrdp_rdp_create");
     self = (struct xrdp_rdp *)g_malloc(sizeof(struct xrdp_rdp), 1);
@@ -378,10 +377,13 @@ xrdp_rdp_create(struct xrdp_session *session, struct trans *trans)
     self->client_info.cache3_entries = 262;
     self->client_info.cache3_size = 4096;
     /* load client ip info */
-    bytes = sizeof(self->client_info.connection_description) - 1;
-    g_write_connection_description(trans->sck,
-                                   self->client_info.connection_description,
-                                   bytes);
+    g_sck_get_peer_ip_address(trans->sck,
+                              self->client_info.client_ip,
+                              sizeof(self->client_info.client_ip),
+                              NULL);
+    g_sck_get_peer_description(trans->sck,
+                               self->client_info.client_description,
+                               sizeof(self->client_info.client_description));
     self->mppc_enc = mppc_enc_new(PROTO_RDP_50);
 #if defined(XRDP_NEUTRINORDP)
     self->rfx_enc = rfx_context_new();
@@ -583,11 +585,13 @@ xrdp_rdp_send(struct xrdp_rdp *self, struct stream *s, int pdu_type)
 }
 
 /*****************************************************************************/
-/* Send a [MS-RDPBCGR] Data PDU with for the given pduType2 with the headers
+/* Send a [MS-RDPBCGR] Data PDU for the given pduType2 from
+ * the specified source with the headers
     added and data compressed */
 int
-xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
-                   int data_pdu_type)
+xrdp_rdp_send_data_from_channel(struct xrdp_rdp *self, struct stream *s,
+                                int data_pdu_type, int channel_id,
+                                int compress)
 {
     int len;
     int ctype;
@@ -612,7 +616,8 @@ xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
     clen = len;
     tocomplen = pdulen - 18;
 
-    if (self->client_info.rdp_compression && self->session->up_and_running)
+    if (compress && self->client_info.rdp_compression &&
+            self->session->up_and_running)
     {
         mppc_enc = self->mppc_enc;
         if (compress_rdp(mppc_enc, (tui8 *)(s->p + 18), tocomplen))
@@ -641,7 +646,8 @@ xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
         else
         {
             LOG_DEVEL(LOG_LEVEL_TRACE,
-                      "xrdp_rdp_send_data: compress_rdp failed, sending "
+                      "xrdp_rdp_send_data_from_channel: "
+                      "compress_rdp failed, sending "
                       "uncompressed data. type %d, flags %d",
                       mppc_enc->protocol_type, mppc_enc->flags);
         }
@@ -650,11 +656,11 @@ xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
     /* TS_SHARECONTROLHEADER */
     out_uint16_le(s, pdulen);            /* totalLength */
     out_uint16_le(s, pdutype);           /* pduType */
-    out_uint16_le(s, self->mcs_channel); /* pduSource */
+    out_uint16_le(s, channel_id);        /* pduSource */
     LOG_DEVEL(LOG_LEVEL_TRACE, "Adding header [MS-RDPBCGR] TS_SHARECONTROLHEADER "
               "totalLength %d, pduType.type %s (%d), pduType.PDUVersion %d, "
               "pduSource %d", pdulen, PDUTYPE_TO_STR(pdutype & 0xf),
-              pdutype & 0xf, ((pdutype & 0xfff0) >> 4), self->mcs_channel);
+              pdutype & 0xf, ((pdutype & 0xfff0) >> 4), channel_id);
 
     /* TS_SHAREDATAHEADER */
     out_uint32_le(s, self->share_id);
@@ -671,11 +677,24 @@ xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
 
     if (xrdp_sec_send(self->sec_layer, s, MCS_GLOBAL_CHANNEL) != 0)
     {
-        LOG(LOG_LEVEL_ERROR, "xrdp_rdp_send_data: xrdp_sec_send failed");
+        LOG(LOG_LEVEL_ERROR, "xrdp_rdp_send_data_from_channel: "
+            "xrdp_sec_send failed");
         return 1;
     }
 
     return 0;
+}
+
+
+/*****************************************************************************/
+/* Send a [MS-RDPBCGR] Data PDU on the MCS channel for the given pduType2
+ * with the headers added and data compressed */
+int
+xrdp_rdp_send_data(struct xrdp_rdp *self, struct stream *s,
+                   int data_pdu_type)
+{
+    return xrdp_rdp_send_data_from_channel(self, s, data_pdu_type,
+                                           self->mcs_channel, 1);
 }
 
 /*****************************************************************************/
@@ -914,6 +933,7 @@ int
 xrdp_rdp_incoming(struct xrdp_rdp *self)
 {
     struct xrdp_iso *iso;
+
     iso = self->sec_layer->mcs_layer->iso_layer;
 
     if (xrdp_sec_incoming(self->sec_layer) != 0)
@@ -924,18 +944,13 @@ xrdp_rdp_incoming(struct xrdp_rdp *self)
     self->mcs_channel = self->sec_layer->mcs_layer->userid +
                         MCS_USERCHANNEL_BASE;
     LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_rdp->mcs_channel %d", self->mcs_channel);
-    g_strncpy(self->client_info.client_addr, iso->trans->addr,
-              sizeof(self->client_info.client_addr) - 1);
-    g_strncpy(self->client_info.client_port, iso->trans->port,
-              sizeof(self->client_info.client_port) - 1);
 
     /* log TLS version and cipher of TLS connections */
     if (iso->selectedProtocol > PROTOCOL_RDP)
     {
         LOG(LOG_LEVEL_INFO,
-            "TLS connection established from %s port %s: %s with cipher %s",
-            self->client_info.client_addr,
-            self->client_info.client_port,
+            "TLS connection established from %s %s with cipher %s",
+            self->client_info.client_description,
             iso->trans->ssl_protocol,
             iso->trans->cipher_name);
     }
@@ -952,11 +967,8 @@ xrdp_rdp_incoming(struct xrdp_rdp *self)
             /* default */ "unknown";
 
         LOG(LOG_LEVEL_INFO,
-            "Non-TLS connection established from %s port %s: "
-            "with security level : %s",
-            self->client_info.client_addr,
-            self->client_info.client_port,
-            security_level);
+            "Non-TLS connection established from %s with security level : %s",
+            self->client_info.client_description, security_level);
     }
 
     return 0;
@@ -1297,7 +1309,20 @@ xrdp_rdp_process_data_font(struct xrdp_rdp *self, struct stream *s)
         self->session->up_and_running = 1;
         LOG_DEVEL(LOG_LEVEL_INFO, "yeah, up_and_running");
         xrdp_rdp_send_data_update_sync(self);
-        xrdp_channel_drdynvc_start(self->sec_layer->chan_layer);
+
+        /* This is also the end of an Deactivation-reactivation
+         * sequence [MS-RDPBCGR] 1.3.1.3 */
+        xrdp_rdp_suppress_output(self, 0, XSO_REASON_DEACTIVATE_REACTIVATE,
+                                 0, 0,
+                                 self->client_info.display_sizes.session_width,
+                                 self->client_info.display_sizes.session_height);
+
+        if (self->session->callback != 0)
+        {
+            /* call to xrdp_wm.c : callback */
+            self->session->callback(self->session->id, 0x555a, 0, 0,
+                                    0, 0);
+        }
     }
     else
     {
@@ -1407,68 +1432,82 @@ xrdp_rdp_process_frame_ack(struct xrdp_rdp *self, struct stream *s)
 }
 
 /*****************************************************************************/
+void
+xrdp_rdp_suppress_output(struct xrdp_rdp *self, int suppress,
+                         enum suppress_output_reason reason,
+                         int left, int top, int right, int bottom)
+{
+    int old_suppress = self->client_info.suppress_output_mask != 0;
+    if (suppress)
+    {
+        self->client_info.suppress_output_mask |= (unsigned int)reason;
+    }
+    else
+    {
+        self->client_info.suppress_output_mask &= ~(unsigned int)reason;
+    }
+
+    int current_suppress =  self->client_info.suppress_output_mask != 0;
+    if (current_suppress != old_suppress && self->session->callback != 0)
+    {
+        self->session->callback(self->session->id, 0x5559, suppress,
+                                MAKELONG(left, top),
+                                MAKELONG(right, bottom), 0);
+    }
+}
+
+/*****************************************************************************/
 /* Process a [MS-RDPBCGR] TS_SUPPRESS_OUTPUT_PDU message */
 static int
 xrdp_rdp_process_suppress(struct xrdp_rdp *self, struct stream *s)
 {
+    int rv = 1;
     int allowDisplayUpdates;
     int left;
     int top;
     int right;
     int bottom;
 
-    if (!s_check_rem_and_log(s, 1, "Parsing [MS-RDPBCGR] TS_SUPPRESS_OUTPUT_PDU"))
+    if (s_check_rem_and_log(s, 1, "Parsing [MS-RDPBCGR] TS_SUPPRESS_OUTPUT_PDU"))
     {
-        return 1;
+        in_uint8(s, allowDisplayUpdates);
+        LOG_DEVEL(LOG_LEVEL_TRACE,
+                  "Received [MS-RDPBCGR] TS_SUPPRESS_OUTPUT_PDU "
+                  "allowDisplayUpdates %d", allowDisplayUpdates);
+        switch (allowDisplayUpdates)
+        {
+            case 0: /* SUPPRESS_DISPLAY_UPDATES */
+                LOG_DEVEL(LOG_LEVEL_DEBUG,
+                          "Client requested display output to be suppressed");
+                xrdp_rdp_suppress_output(self, 1,
+                                         XSO_REASON_CLIENT_REQUEST,
+                                         0, 0, 0, 0);
+                rv = 0;
+                break;
+            case 1: /* ALLOW_DISPLAY_UPDATES */
+                LOG_DEVEL(LOG_LEVEL_DEBUG,
+                          "Client requested display output to be enabled");
+                if (s_check_rem_and_log(s, 11,
+                                        "Parsing [MS-RDPBCGR] Padding and TS_RECTANGLE16"))
+                {
+                    in_uint8s(s, 3); /* pad */
+                    in_uint16_le(s, left);
+                    in_uint16_le(s, top);
+                    in_uint16_le(s, right);
+                    in_uint16_le(s, bottom);
+                    LOG_DEVEL(LOG_LEVEL_TRACE,
+                              "Received [MS-RDPBCGR] TS_RECTANGLE16 "
+                              "left %d, top %d, right %d, bottom %d",
+                              left, top, right, bottom);
+                    xrdp_rdp_suppress_output(self, 0,
+                                             XSO_REASON_CLIENT_REQUEST,
+                                             left, top, right, bottom);
+                    rv = 0;
+                }
+                break;
+        }
     }
-    in_uint8(s, allowDisplayUpdates);
-    LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] TS_SUPPRESS_OUTPUT_PDU "
-              "allowDisplayUpdates %d", allowDisplayUpdates);
-    switch (allowDisplayUpdates)
-    {
-        case 0: /* SUPPRESS_DISPLAY_UPDATES */
-            self->client_info.suppress_output = 1;
-            LOG_DEVEL(LOG_LEVEL_DEBUG, "Client requested display output to be suppressed");
-            if (self->session->callback != 0)
-            {
-                self->session->callback(self->session->id, 0x5559, 1,
-                                        0, 0, 0);
-            }
-            else
-            {
-                LOG_DEVEL(LOG_LEVEL_WARNING,
-                          "Bug: no callback registered for xrdp_rdp_process_suppress");
-            }
-            break;
-        case 1: /* ALLOW_DISPLAY_UPDATES */
-            self->client_info.suppress_output = 0;
-            LOG_DEVEL(LOG_LEVEL_DEBUG, "Client requested display output to be enabled");
-            if (!s_check_rem_and_log(s, 11, "Parsing [MS-RDPBCGR] Padding and TS_RECTANGLE16"))
-            {
-                return 1;
-            }
-            in_uint8s(s, 3); /* pad */
-            in_uint16_le(s, left);
-            in_uint16_le(s, top);
-            in_uint16_le(s, right);
-            in_uint16_le(s, bottom);
-            LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] TS_RECTANGLE16 "
-                      "left %d, top %d, right %d, bottom %d",
-                      left, top, right, bottom);
-            if (self->session->callback != 0)
-            {
-                self->session->callback(self->session->id, 0x5559, 0,
-                                        MAKELONG(left, top),
-                                        MAKELONG(right, bottom), 0);
-            }
-            else
-            {
-                LOG_DEVEL(LOG_LEVEL_WARNING,
-                          "Bug: no callback registered for xrdp_rdp_process_suppress");
-            }
-            break;
-    }
-    return 0;
+    return rv;
 }
 
 /*****************************************************************************/

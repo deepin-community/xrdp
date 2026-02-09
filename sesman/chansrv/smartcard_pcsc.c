@@ -21,6 +21,16 @@
  * smartcard redirection support, PCSC daemon standin
  * this will act like pcsc daemon
  * pcsc lib and daemon write struct on unix domain socket for communication
+ *
+ * Currently this file implements some of the PDUs detailed in [MS-RDPESC].
+ *
+ * The PDUs use DCE IDL structs. These are required to be re-interpreted
+ * in DCE NDR (Netword Data Representation)
+ *
+ * For more information on this subject see DCE publication C706
+ * "DCE 1.1: Remote Procedure Call" 1997. In particular:-
+ * Section 4.2 : Describes the IDL
+ * Section 14 : Describes the NDR
  */
 
 #if defined(HAVE_CONFIG_H)
@@ -498,6 +508,10 @@ scard_function_establish_context_return(void *user_data,
                   "app_context %d", app_context);
     }
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, app_context);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
@@ -564,6 +578,10 @@ scard_function_release_context_return(void *user_data,
     }
     con = uds_client->con;
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
@@ -623,7 +641,6 @@ scard_process_list_readers(struct trans *con, struct stream *in_s)
     {
         LOG(LOG_LEVEL_ERROR, "scard_process_list_readers: "
             "get_pcsc_context_by_app_context failed");
-        g_free(groups);
         return 1;
     }
     pcscListReaders = g_new0(struct pcsc_list_readers, 1);
@@ -635,25 +652,85 @@ scard_process_list_readers(struct trans *con, struct stream *in_s)
 }
 
 /*****************************************************************************/
+/**
+ * Counts the number of non-NULL strings in a multistring
+ *
+ * [MS-RDPESC] A multistring is "A series of null-terminated character
+ * strings terminated by a final null character stored in a contiguous
+ * block of memory."
+ *
+ * The string is guaranteed to have at least the returned number of NULL
+ * characters in it
+ */
+unsigned int
+count_multistring_elements(const char *str, unsigned int len)
+{
+    unsigned int rv = 0;
+
+    if (str != NULL)
+    {
+        while (len > 0)
+        {
+            // Look for a terminator
+            const char *p = (const char *)memchr(str, '\0', len);
+            if (!p || p == str)
+            {
+                // No terminator, or an empty string encountered */
+                break;
+            }
+
+            ++rv;
+            ++p; // Skip terminator
+            len -= (p - str);
+            str = p;
+        }
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
 int
 scard_function_list_readers_return(void *user_data,
                                    struct stream *in_s,
                                    int len, int status)
 {
+    /* see [MS-RDPESC] 2.2.3.4
+     *
+     * IDL:-
+     *
+     * typedef struct _longAndMultiString_Return {
+     *     long ReturnCode;
+     *     [range(0,65536)] unsigned long cBytes;
+     *     [unique] [size_is(cBytes)] byte *msz;
+     *     } ListReaderGroups_Return, ListReaders_Return;
+     *
+     * Type summary:-
+     *
+     * ReturnCode         32-bit word
+     * CBytes             Unsigned 32-bit word
+     * msz                Embedded full pointer to conformant array of bytes
+     *
+     * NDR:-
+     *
+     * Offset   Decription
+     * 0        ReturnCode
+     * 4        cBytes
+     * 8        msz pointer Referent Identifier
+     * 12       length of multistring in bytes
+     * 16       Multistring data
+     */
     struct stream *out_s;
-    int            chr;
     int            readers;
-    int            rn_index;
     int            index;
     int            bytes;
     int            cchReaders;
     int            llen;
     int uds_client_id;
-    twchar         reader_name[100];
-    char           lreader_name[16][100];
     struct pcsc_uds_client *uds_client;
     struct trans *con;
     struct pcsc_list_readers *pcscListReaders;
+    char *msz_readers = NULL;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "scard_function_list_readers_return:");
     LOG_DEVEL(LOG_LEVEL_DEBUG, "  status 0x%8.8x", status);
@@ -677,59 +754,63 @@ scard_function_list_readers_return(void *user_data,
         return 1;
     }
     con = uds_client->con;
-    g_memset(reader_name, 0, sizeof(reader_name));
-    g_memset(lreader_name, 0, sizeof(lreader_name));
-    rn_index = 0;
     readers = 0;
     llen = 0;
     if (status == 0)
     {
-        in_uint8s(in_s, 28);
-        in_uint32_le(in_s, len);
-        llen = len;
+        // Skip [C706] PDU Header
+        in_uint8s(in_s, 16);
+        // Move to length of multistring in bytes
+        in_uint8s(in_s, 12);
+
+        in_uint32_le(in_s, llen);
         if (cchReaders > 0)
         {
-            while (len > 0)
+            // Convert the wide multistring to a UTF-8 multistring
+            unsigned int u8len;
+            u8len = in_utf16_le_fixed_as_utf8_length(in_s, len / 2);
+            msz_readers = (char *)malloc(u8len);
+            if (msz_readers == NULL)
             {
-                in_uint16_le(in_s, chr);
-                len -= 2;
-                if (chr == 0)
-                {
-                    if (reader_name[0] != 0)
-                    {
-                        g_wcstombs(lreader_name[readers], reader_name, 99);
-                        g_memset(reader_name, 0, sizeof(reader_name));
-                        readers++;
-                    }
-                    reader_name[0] = 0;
-                    rn_index = 0;
-                }
-                else
-                {
-                    reader_name[rn_index] = chr;
-                    rn_index++;
-                }
+                LOG(LOG_LEVEL_ERROR, "scard_function_list_readers_return: "
+                    "Can't allocate %u bytes of memory", u8len);
+                readers = 0;
             }
-        }
-        if (rn_index > 0)
-        {
-            if (reader_name[0] != 0)
+            else
             {
-                g_wcstombs(lreader_name[readers], reader_name, 99);
-                g_memset(reader_name, 0, sizeof(reader_name));
-                readers++;
+                in_utf16_le_fixed_as_utf8(in_s, len / 2, msz_readers, u8len);
+                readers = count_multistring_elements(msz_readers, u8len);
             }
         }
     }
 
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, llen);
     out_uint32_le(out_s, readers);
-    for (index = 0; index < readers; index++)
     {
-        out_uint8a(out_s, lreader_name[index], 100);
+        const char *p = msz_readers;
+        for (index = 0; index < readers; index++)
+        {
+            unsigned int slen = strlen(p);
+            if (slen < 100)
+            {
+                out_uint8a(out_s, p, slen);
+                out_uint8s(out_s, 100 - slen);
+            }
+            else
+            {
+                out_uint8a(out_s, p, 99);
+                out_uint8s(out_s, 1);
+            }
+            p += (slen + 1);
+        }
     }
+    free(msz_readers);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
     bytes = (int) (out_s->end - out_s->data);
@@ -826,6 +907,10 @@ scard_function_connect_return(void *user_data,
         }
     }
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, hCard);
     out_uint32_le(out_s, dwActiveProtocol);
@@ -894,6 +979,10 @@ scard_function_disconnect_return(void *user_data,
     }
     con = uds_client->con;
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
@@ -960,6 +1049,10 @@ scard_function_begin_transaction_return(void *user_data,
     }
     con = uds_client->con;
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
@@ -1030,6 +1123,10 @@ scard_function_end_transaction_return(void *user_data,
     con = uds_client->con;
 
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
@@ -1179,6 +1276,10 @@ scard_function_transmit_return(void *user_data,
     }
     LOG_DEVEL(LOG_LEVEL_DEBUG, "scard_function_transmit_return: cbRecvLength %d", cbRecvLength);
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, recv_ior.dwProtocol);
     out_uint32_le(out_s, recv_ior.cbPciLength);
@@ -1274,6 +1375,10 @@ scard_function_control_return(void *user_data,
     }
     LOG_DEVEL(LOG_LEVEL_DEBUG, "scard_function_control_return: cbRecvLength %d", cbRecvLength);
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, cbRecvLength);
     out_uint8a(out_s, recvBuf, cbRecvLength);
@@ -1362,15 +1467,40 @@ scard_function_status_return(void *user_data,
                              struct stream *in_s,
                              int len, int status)
 {
+    /* see [MS-RDPESC] 2.2.3.10
+     *
+     * IDL:-
+     *
+     * typedef struct _Status_Return {
+     *     long ReturnCode;
+     *     unsigned long cBytes;
+     *     [unique] [size_is(cBytes)] byte *mszReaderNames;
+     *     unsigned long dwState;
+     *     unsigned long dwProtocol;
+     *     byte pbAtr[32];
+     *     [range(0,32)] unsigned long cbAtrLen;
+     * } Status_Return;
+     *
+     * NDR:-
+     *
+     * Offset   Decription
+     * 0        ReturnCode
+     * 4        cBytes
+     * 8        Referent Identifier for mszReaderNames;
+     * 12       dwState
+     * 16       dwProtocol
+     * 20       pbAtr
+     * 52       cbAtrLen
+     * 56       length of multistring in bytes (same as cBytes)
+     * 60       Multistring data
+     */
     struct stream *out_s;
-    int index;
     int bytes;
     int dwReaderLen;
     int dwState;
     int dwProtocol;
     int dwAtrLen;
     char attr[32];
-    twchar reader_name[100];
     char lreader_name[100];
     int uds_client_id;
     struct pcsc_uds_client *uds_client;
@@ -1407,46 +1537,38 @@ scard_function_status_return(void *user_data,
     lreader_name[0] = 0;
     if (status == 0)
     {
-        in_uint8s(in_s, 20);
+        in_uint8s(in_s, 16); // Skip [C706] PDU Header
+        in_uint8s(in_s, 4);  // ReturnCode
         in_uint32_le(in_s, dwReaderLen);
-        in_uint8s(in_s, 4);
+        in_uint8s(in_s, 4); // Referent Identifier
         in_uint32_le(in_s, dwState);
         dwState = g_ms2pc[dwState % 6];
         in_uint32_le(in_s, dwProtocol);
         in_uint8a(in_s, attr, 32);
         in_uint32_le(in_s, dwAtrLen);
-        if (dwReaderLen > 0)
+
+        // Length of multistring and multistring data
+        if (dwReaderLen <= 0)
         {
-            in_uint32_le(in_s, dwReaderLen);
-            dwReaderLen /= 2;
+            lreader_name[0] = '\0';
         }
         else
         {
-            dwReaderLen = 1;
+            in_uint8s(in_s, 4);  // Skip length of msz in bytes
+
+            // TODO: why are we just returning the first name of the card?
+            in_utf16_le_terminated_as_utf8(in_s, lreader_name,
+                                           sizeof(lreader_name));
         }
-        if (dwReaderLen < 1)
-        {
-            LOG(LOG_LEVEL_ERROR, "scard_function_status_return: dwReaderLen < 1");
-            dwReaderLen = 1;
-        }
-        if (dwReaderLen > 99)
-        {
-            LOG_DEVEL(LOG_LEVEL_WARNING, "scard_function_status_return: dwReaderLen too big "
-                      "0x%8.8x", dwReaderLen);
-            dwReaderLen = 99;
-        }
-        g_memset(reader_name, 0, sizeof(reader_name));
-        g_memset(lreader_name, 0, sizeof(lreader_name));
-        for (index = 0; index < dwReaderLen - 1; index++)
-        {
-            in_uint16_le(in_s, reader_name[index]);
-        }
-        g_wcstombs(lreader_name, reader_name, 99);
     }
     LOG_DEVEL(LOG_LEVEL_DEBUG, "scard_function_status_return: dwAtrLen %d dwReaderLen %d "
               "dwProtocol %d dwState %d name %s",
               dwAtrLen, dwReaderLen, dwProtocol, dwState, lreader_name);
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     dwReaderLen = g_strlen(lreader_name);
     out_uint32_le(out_s, dwReaderLen);
@@ -1560,6 +1682,10 @@ scard_function_get_status_change_return(void *user_data,
     con = uds_client->con;
 
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     if (status != 0)
     {
@@ -1650,6 +1776,10 @@ scard_function_cancel_return(void *user_data,
     }
     con = uds_client->con;
     out_s = trans_get_out_s(con, 8192);
+    if (out_s == NULL)
+    {
+        return 1;
+    }
     s_push_layer(out_s, iso_hdr, 8);
     out_uint32_le(out_s, status); /* SCARD_S_SUCCESS status */
     s_mark_end(out_s);
@@ -1700,6 +1830,7 @@ scard_process_msg(struct trans *con, struct stream *in_s, int command)
             break;
 
         case 0x03: /* SCARD_LIST_READERS */
+            /* This is only called from xrdp_pcsc.c */
             LOG_DEVEL(LOG_LEVEL_INFO, "scard_process_msg: SCARD_LIST_READERS");
             rv = scard_process_list_readers(con, in_s);
             break;
@@ -1853,6 +1984,8 @@ scard_pcsc_init(void)
     if (g_lis == 0)
     {
         g_lis = trans_create(2, 8192, 8192);
+        // TODO: See #2501. Use needs a way to move PCSCLITE_CSOCK_NAME
+        // to a location not under $HOME.
         home = g_getenv("HOME");
         disp = g_display_num;
         g_snprintf(g_pcsclite_ipc_dir, 255, "%s/.pcsc%d", home, disp);

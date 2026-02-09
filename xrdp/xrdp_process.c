@@ -249,7 +249,7 @@ xrdp_process_main_loop(struct xrdp_process *self)
     {
         init_stream(self->server_trans->in_s, 32 * 1024);
 
-        term_obj = g_get_term_event();
+        term_obj = g_get_term();
         cont = 1;
 
         while (cont)
@@ -306,6 +306,8 @@ xrdp_process_main_loop(struct xrdp_process *self)
     }
     /* Run end in module */
     xrdp_process_mod_end(self);
+    xrdp_wm_delete(self->wm);
+    self->wm = NULL;
     libxrdp_exit(self->session);
     self->session = 0;
     self->status = -1;

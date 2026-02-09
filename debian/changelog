@@ -1,3 +1,114 @@
+xrdp (0.10.1-4.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * CVE-2025-68670: Buffer overflow parsing domain (Closes: #1126537)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Sat, 31 Jan 2026 20:39:32 +0100
+
+xrdp (0.10.1-4) unstable; urgency=medium
+
+  * Ack NMU.
+  * d/rules: disabled fuse.
+  * d/control:
+    - disable fuse. (Closes: #1121185)
+    - drop guacamole from Suggests: (Closes: #1118245)
+  * d/watch: upgrade to version 5. (Closes: #1095998)
+  * d/clean: updated.
+
+ -- Alex Myczko <tar@debian.org>  Sat, 27 Dec 2025 08:20:49 +0000
+
+xrdp (0.10.1-3.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Explicitly configure debian pam configuration. (Closes: #1104505)
+
+ -- Bastian Germann <bage@debian.org>  Fri, 06 Jun 2025 12:43:34 +0200
+
+xrdp (0.10.1-3) unstable; urgency=medium
+
+  * Fix FTCBFS: (Closes: #888772) (Thanks Helmut Grohne for the patch)
+    + Avoid useless install-data-hook running host programs.
+  * d/rules: disable tests.
+
+ -- Alex Myczko <tar@debian.org>  Fri, 30 Aug 2024 06:24:26 +0000
+
+xrdp (0.10.1-2) unstable; urgency=medium
+
+  * d/control:
+    - switch build depends of systemd to systemd-dev (Closes: #106580)
+    - drop version from autoconf and automake
+
+ -- Alex Myczko <tar@debian.org>  Wed, 21 Aug 2024 15:08:22 +0000
+
+xrdp (0.10.1-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Drop dvorak patch, as upstreamed.
+
+ -- Alex Myczko <tar@debian.org>  Sun, 11 Aug 2024 11:10:04 +0000
+
+xrdp (0.10.0-2) unstable; urgency=medium
+
+  * Upload to unstable.
+  * d/control: update Homepage field to https://.
+  * Cherry pick dvorak fix from upstream. (Closes: #1071556)
+  * d/README.Debian: add link for settings.
+  * Applied patch for d/watch and signature key. (Closes: #1043488)
+
+ -- Alex Myczko <tar@debian.org>  Mon, 22 Jul 2024 16:24:24 +0000
+
+xrdp (0.10.0-1) experimental; urgency=medium
+
+  * New upstream version.
+  * d/control: build-depends pkg-config to pkgconf.
+  * d/copyright: updated.
+
+ -- Alex Myczko <tar@debian.org>  Mon, 13 May 2024 11:26:44 +0200
+
+xrdp (0.10.0~beta2-1) experimental; urgency=medium
+
+  * New upstream version.
+
+ -- Gürkan Myczko <tar@debian.org>  Thu, 28 Mar 2024 05:31:28 +0100
+
+xrdp (0.10.0~beta1-2) experimental; urgency=medium
+
+  * d/control: add libcmocka-dev to build-depends.
+
+ -- Gürkan Myczko <tar@debian.org>  Mon, 11 Mar 2024 12:16:15 +0100
+
+xrdp (0.10.0~beta1-1) experimental; urgency=medium
+
+  * New upstream version.
+
+ -- Gürkan Myczko <tar@debian.org>  Mon, 11 Mar 2024 09:37:45 +0100
+
+xrdp (0.9.24-3) unstable; urgency=medium
+
+  * Added d/xrdp-colord.rules. (Closes: #907878)
+  * Updated d/README.Debian.
+
+ -- Gürkan Myczko <tar@debian.org>  Sun, 11 Feb 2024 22:46:01 +0100
+
+xrdp (0.9.24-2) unstable; urgency=medium
+
+  * Upload to unstable.
+
+ -- Gürkan Myczko <tar@debian.org>  Thu, 25 Jan 2024 15:16:20 +0100
+
+xrdp (0.9.24-1) experimental; urgency=medium
+
+  * New upstream version. (Closes: #1053284, #1051061)
+    (CVE-2023-42822 and CVE-2023-40184)
+  * d/clean: added.
+  * d/control: replace lsb-base with sysvinit-utils,
+    add myself to Uploaders.
+  * Thanks for the better d/watch file patch. (Closes: #1036056)
+  * Add myself to Uploaders.
+  * d/README.Debian, add information about #907878.
+
+ -- Gürkan Myczko <tar@debian.org>  Tue, 02 Jan 2024 23:13:41 +0100
+
 xrdp (0.9.21.1-1) unstable; urgency=medium
 
   * New upstream version. (Closes: #1025879)

@@ -100,7 +100,7 @@ l_file_read_sections(int fd, int max_file_size, struct list *names)
         {
             if (line_lookup_for_section_name(text, FILE_MAX_LINE_BYTES) != 0)
             {
-                list_add_item(names, (tbus)g_strdup(text));
+                list_add_strdup(names, text);
             }
         }
     }
@@ -286,7 +286,7 @@ l_file_read_section(int fd, int max_file_size, const char *section,
                         if (g_strlen(text) > 0)
                         {
                             file_split_name_value(text, name, value);
-                            list_add_item(names, (tbus)g_strdup(name));
+                            list_add_strdup(names, name);
 
                             if (value[0] == '$')
                             {
@@ -294,16 +294,16 @@ l_file_read_section(int fd, int max_file_size, const char *section,
 
                                 if (lvalue != 0)
                                 {
-                                    list_add_item(values, (tbus)g_strdup(lvalue));
+                                    list_add_strdup(values, lvalue);
                                 }
                                 else
                                 {
-                                    list_add_item(values, (tbus)g_strdup(""));
+                                    list_add_strdup(values, "");
                                 }
                             }
                             else
                             {
-                                list_add_item(values, (tbus)g_strdup(value));
+                                list_add_strdup(values, value);
                             }
                         }
                     }
@@ -349,7 +349,7 @@ file_by_name_read_sections(const char *file_name, struct list *names)
         return 1;
     }
 
-    fd = g_file_open_ex(file_name, 1, 0, 0, 0);
+    fd = g_file_open_ro(file_name);
 
     if (fd < 0)
     {
@@ -390,7 +390,7 @@ file_by_name_read_section(const char *file_name, const char *section,
         return 1;
     }
 
-    fd = g_file_open_ex(file_name, 1, 0, 0, 0);
+    fd = g_file_open_ro(file_name);
 
     if (fd < 0)
     {

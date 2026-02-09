@@ -124,7 +124,7 @@ pulseaudio modules. The build instructions can be found at wiki.
 xrdp
 ├── common ······ common code
 ├── docs ········ documentation
-├── fontdump ···· font dump for Windows
+├── fontutils ··· font handling utilities
 ├── genkeymap ··· keymap generator
 ├── instfiles ··· installable data file
 ├── keygen ······ xrdp RSA key pair generator
@@ -138,7 +138,7 @@ xrdp
 ├── scripts ····· build scripts
 ├┬─ sesman ······ session manager for xrdp
 |├── chansrv ···· channel server for xrdp
-|├── libscp ····· authorization library
+|├── libsesman ·· Code common to sesman and its related executables
 |└── tools ······ session management tools for sys admins
 ├── tests ······· tests for the code
 ├┬─ tools ······· tools
@@ -150,5 +150,5 @@ xrdp
 ├── xrdp ········ main server code
 ├── xrdpapi ····· virtual channel API
 ├── xrdpvr ······ API for playing media over RDP
-└── xup ········· X11rdp and xorgxrdp client module
+└── xup ········· xorgxrdp client module
 ```

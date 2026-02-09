@@ -18,6 +18,9 @@
  * main include file
  */
 
+#ifndef _XRDP_XRDP_H_
+#define _XRDP_XRDP_H_
+
 /* include other h files */
 #include "arch.h"
 #include "parse.h"
@@ -41,12 +44,34 @@ g_xrdp_sync(long (*sync_func)(long param1, long param2), long sync_param1,
             long sync_param2);
 int
 xrdp_child_fork(void);
+long
+g_get_sync_mutex(void);
+void
+g_set_sync_mutex(long mutex);
+long
+g_get_sync1_mutex(void);
+void
+g_set_sync1_mutex(long mutex);
+void
+g_set_term_event(tbus event);
+void
+g_set_sigchld_event(tbus event);
+void
+g_set_sync_event(tbus event);
+long
+g_get_threadid(void);
+void
+g_set_threadid(long id);
+tbus
+g_get_term(void);
+tbus
+g_get_sigchld(void);
 int
 g_is_term(void);
 void
 g_set_term(int in_val);
-tbus
-g_get_term_event(void);
+void
+g_set_sigchld(int in_val);
 tbus
 g_get_sync_event(void);
 void
@@ -119,6 +144,8 @@ xrdp_wm_get_vis_region(struct xrdp_wm *self, struct xrdp_bitmap *bitmap,
 int
 xrdp_wm_mouse_move(struct xrdp_wm *self, int x, int y);
 int
+xrdp_wm_mouse_touch(struct xrdp_wm *self, int gesture, int param);
+int
 xrdp_wm_mouse_click(struct xrdp_wm *self, int x, int y, int but, int down);
 int
 xrdp_wm_key(struct xrdp_wm *self, int device_flags, int scan_code);
@@ -128,10 +155,11 @@ int
 xrdp_wm_pu(struct xrdp_wm *self, struct xrdp_bitmap *control);
 int
 xrdp_wm_send_pointer(struct xrdp_wm *self, int cache_idx,
-                     char *data, char *mask, int x, int y, int bpp);
+                     char *data, char *mask, int x, int y, int bpp,
+                     int width, int height);
 int
 xrdp_wm_pointer(struct xrdp_wm *self, char *data, char *mask, int x, int y,
-                int bpp);
+                int bpp, int width, int height);
 int
 callback(intptr_t id, int msg, intptr_t param1, intptr_t param2,
          intptr_t param3, intptr_t param4);
@@ -147,8 +175,12 @@ xrdp_wm_get_wait_objs(struct xrdp_wm *self, tbus *robjs, int *rc,
                       tbus *wobjs, int *wc, int *timeout);
 int
 xrdp_wm_check_wait_objs(struct xrdp_wm *self);
+const char *
+xrdp_wm_login_state_to_str(enum wm_login_state login_state);
 int
 xrdp_wm_set_login_state(struct xrdp_wm *self, enum wm_login_state login_state);
+int
+xrdp_wm_can_resize(struct xrdp_wm *self);
 void
 xrdp_wm_mod_connect_done(struct xrdp_wm *self, int status);
 
@@ -184,6 +216,10 @@ xrdp_region_intersect_rect(struct xrdp_region *self, struct xrdp_rect *rect);
 int
 xrdp_region_get_rect(struct xrdp_region *self, int index,
                      struct xrdp_rect *rect);
+int
+xrdp_region_get_bounds(struct xrdp_region *self, struct xrdp_rect *rect);
+int
+xrdp_region_not_empty(struct xrdp_region *self);
 
 /* xrdp_bitmap_common.c */
 struct xrdp_bitmap *
@@ -297,8 +333,19 @@ xrdp_painter_draw_bitmap(struct xrdp_painter *self,
                          int x, int y, int cx, int cy);
 int
 xrdp_painter_text_width(struct xrdp_painter *self, const char *text);
+
+/* As above, but have a maximum Unicode character count for the string */
 int
-xrdp_painter_text_height(struct xrdp_painter *self, const char *text);
+xrdp_painter_text_width_count(struct xrdp_painter *self,
+                              const char *text, unsigned int c32_count);
+
+/* Size of a string composed of a repeated number of Unicode characters */
+int
+xrdp_painter_repeated_char_width(struct xrdp_painter *self,
+                                 char32_t c32, unsigned int repeat_count);
+
+unsigned int
+xrdp_painter_font_body_height(const struct xrdp_painter *self);
 int
 xrdp_painter_draw_text(struct xrdp_painter *self,
                        struct xrdp_bitmap *bitmap,
@@ -312,6 +359,11 @@ xrdp_painter_draw_text2(struct xrdp_painter *self,
                         int box_left, int box_top,
                         int box_right, int box_bottom,
                         int x, int y, char *data, int data_len);
+int
+xrdp_painter_draw_char(struct xrdp_painter *self,
+                       struct xrdp_bitmap *bitmap,
+                       int x, int y, char32_t chr,
+                       unsigned int repeat_count);
 int
 xrdp_painter_copy(struct xrdp_painter *self,
                   struct xrdp_bitmap *src,
@@ -339,12 +391,21 @@ xrdp_painter_line(struct xrdp_painter *self,
 
 /* xrdp_font.c */
 struct xrdp_font *
-xrdp_font_create(struct xrdp_wm *wm);
+xrdp_font_create(struct xrdp_wm *wm, unsigned int dpi);
 void
 xrdp_font_delete(struct xrdp_font *self);
 int
 xrdp_font_item_compare(struct xrdp_font_char *font1,
                        struct xrdp_font_char *font2);
+/**
+ * Gets a checked xrdp_font_char from a font
+ * @param f Font
+ * @param c32 Unicode codepoint
+ */
+#define XRDP_FONT_GET_CHAR(f, c32) \
+    (((unsigned int)(c32) >= ' ') && ((unsigned int)(c32) < (f)->char_count) \
+     ? ((f)->chars + (unsigned int)(c32)) \
+     : (f)->default_char)
 
 /* funcs.c */
 int
@@ -358,13 +419,7 @@ rect_contained_by(struct xrdp_rect *in1, int left, int top,
 int
 check_bounds(struct xrdp_bitmap *b, int *x, int *y, int *cx, int *cy);
 int
-add_char_at(char *text, int text_size, twchar ch, int index);
-int
-remove_char_at(char *text, int text_size, int index);
-int
 set_string(char **in_str, const char *in);
-int
-wchar_repeat(twchar *dest, int dest_size_in_wchars, twchar ch, int repeat);
 
 /* in lang.c */
 struct xrdp_key_info *
@@ -375,18 +430,31 @@ int
 get_keysym_from_scan_code(int device_flags, int scan_code, int *keys,
                           int caps_lock, int num_lock, int scroll_lock,
                           struct xrdp_keymap *keymap);
-twchar
+char32_t
 get_char_from_scan_code(int device_flags, int scan_code, int *keys,
                         int caps_lock, int num_lock, int scroll_lock,
                         struct xrdp_keymap *keymap);
 int
 get_keymaps(int keylayout, struct xrdp_keymap *keymap);
 
+int
+km_load_file(const char *filename, struct xrdp_keymap *keymap);
+
 /* xrdp_login_wnd.c */
+/**
+ * Gets the DPI of the login (primary) monitor
+ *
+ * @param self xrdp_wm instance
+ * @return DPI of primary monitor, or 0 if unavailable.
+ */
+unsigned int
+xrdp_login_wnd_get_monitor_dpi(struct xrdp_wm *self);
 int
 xrdp_login_wnd_create(struct xrdp_wm *self);
 int
 load_xrdp_config(struct xrdp_config *config, const char *xrdp_ini, int bpp);
+void
+xrdp_login_wnd_scale_config_values(struct xrdp_wm *self);
 
 /* xrdp_bitmap_compress.c */
 int
@@ -397,18 +465,15 @@ xrdp_bitmap_compress(char *in_data, int width, int height,
 
 /* xrdp_mm.c */
 
-struct dynamic_monitor_layout
+struct display_control_monitor_layout_data
 {
-    int flags;
-    int left;
-    int top;
-    int width;
-    int height;
-    int physical_width;
-    int physical_height;
-    int orientation;
-    int desktop_scale_factor;
-    int device_scale_factor;
+    struct display_size_description description;
+    enum display_resize_state state;
+    int last_state_update_timestamp;
+    int start_time;
+    /// This flag is set if the state machine needs to
+    /// shutdown/startup EGFX
+    int using_egfx;
 };
 
 int
@@ -416,6 +481,8 @@ xrdp_mm_drdynvc_up(struct xrdp_mm *self);
 int
 xrdp_mm_suppress_output(struct xrdp_mm *self, int suppress,
                         int left, int top, int right, int bottom);
+int
+xrdp_mm_up_and_running(struct xrdp_mm *self);
 struct xrdp_mm *
 xrdp_mm_create(struct xrdp_wm *owner);
 void
@@ -435,6 +502,14 @@ int
 xrdp_mm_check_wait_objs(struct xrdp_mm *self);
 int
 xrdp_mm_frame_ack(struct xrdp_mm *self, int frame_id);
+void
+xrdp_mm_efgx_add_dirty_region_to_planar_list(struct xrdp_mm *self,
+        struct xrdp_region *dirty_region);
+int
+xrdp_mm_egfx_send_planar_bitmap(struct xrdp_mm *self,
+                                struct xrdp_bitmap *bitmap,
+                                struct xrdp_rect *rect,
+                                int surface_id, int x, int y);
 int
 server_begin_update(struct xrdp_mod *mod);
 int
@@ -473,11 +548,21 @@ int
 server_set_pointer_ex(struct xrdp_mod *mod, int x, int y,
                       char *data, char *mask, int bpp);
 int
+server_set_pointer_large(struct xrdp_mod *mod, int x, int y,
+                         char *data, char *mask, int bpp,
+                         int width, int height);
+int
+server_paint_rects_ex(struct xrdp_mod *mod,
+                      int num_drects, short *drects,
+                      int num_crects, short *crects,
+                      char *data, int left, int top,
+                      int width, int height,
+                      int flags, int frame_id,
+                      void *shmem_ptr, int shmem_bytes);
+int
 server_palette(struct xrdp_mod *mod, int *palette);
 int
 server_msg(struct xrdp_mod *mod, const char *msg, int code);
-int
-server_is_term(struct xrdp_mod *mod);
 int
 server_set_clip(struct xrdp_mod *mod, int x, int y, int cx, int cy);
 int
@@ -509,7 +594,10 @@ server_draw_text(struct xrdp_mod *mod, int font,
                  int box_right, int box_bottom,
                  int x, int y, char *data, int data_len);
 int
-server_reset(struct xrdp_mod *mod, int width, int height, int bpp);
+client_monitor_resize(struct xrdp_mod *mod, int width, int height,
+                      int num_monitors, const struct monitor_info *monitors);
+int
+server_monitor_resize_done(struct xrdp_mod *mod);
 int
 is_channel_allowed(struct xrdp_wm *wm, int channel_id);
 int
@@ -570,4 +658,9 @@ server_add_char_alpha(struct xrdp_mod *mod, int font, int character,
                       int width, int height, char *data);
 int
 server_session_info(struct xrdp_mod *mod, const char *data, int data_bytes);
+int
+server_egfx_cmd(struct xrdp_mod *v,
+                char *cmd, int cmd_bytes,
+                char *data, int data_bytes);
 
+#endif

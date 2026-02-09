@@ -18,6 +18,9 @@
  * libxup main header file
  */
 
+#ifndef XUP_H
+#define XUP_H
+
 /* include other h files */
 #include "arch.h"
 #include "parse.h"
@@ -52,7 +55,10 @@ struct mod
     int (*mod_suppress_output)(struct mod *v, int suppress,
                                int left, int top, int right, int bottom);
     int (*mod_server_monitor_resize)(struct mod *v,
-                                     int width, int height);
+                                     int width, int height,
+                                     int num_monitors,
+                                     const struct monitor_info *monitors,
+                                     int *in_progress);
     int (*mod_server_monitor_full_invalidate)(struct mod *v,
             int width, int height);
     int (*mod_server_version_message)(struct mod *v);
@@ -70,7 +76,7 @@ struct mod
     int (*server_set_cursor)(struct mod *v, int x, int y, char *data, char *mask);
     int (*server_palette)(struct mod *v, int *palette);
     int (*server_msg)(struct mod *v, const char *msg, int code);
-    int (*server_is_term)(struct mod *v);
+    int (*server_is_term)(void);
     int (*server_set_clip)(struct mod *v, int x, int y, int cx, int cy);
     int (*server_reset_clip)(struct mod *v);
     int (*server_set_fgcolor)(struct mod *v, int fgcolor);
@@ -91,7 +97,10 @@ struct mod
                             int box_left, int box_top,
                             int box_right, int box_bottom,
                             int x, int y, char *data, int data_len);
-    int (*server_reset)(struct mod *v, int width, int height, int bpp);
+    int (*client_monitor_resize)(struct mod *v, int width, int height,
+                                 int num_monitors,
+                                 const struct monitor_info *monitors);
+    int (*server_monitor_resize_done)(struct mod *v);
     int (*server_get_channel_count)(struct mod *v);
     int (*server_query_channel)(struct mod *v, int index,
                                 char *channel_name,
@@ -152,8 +161,22 @@ struct mod
                               int num_crects, short *crects,
                               char *data, int width, int height,
                               int flags, int frame_id);
-
-    tintptr server_dumby[100 - 45]; /* align, 100 minus the number of server
+    int (*server_session_info)(struct mod *v, const char *data,
+                               int data_bytes);
+    int (*server_set_pointer_large)(struct mod *v, int x, int y,
+                                    char *data, char *mask, int bpp,
+                                    int width, int height);
+    int (*server_paint_rects_ex)(struct mod *v,
+                                 int num_drects, short *drects,
+                                 int num_crects, short *crects,
+                                 char *data, int left, int top,
+                                 int width, int height,
+                                 int flags, int frame_id,
+                                 void *shmem_ptr, int shmem_bytes);
+    int (*server_egfx_cmd)(struct mod *v,
+                           char *cmd, int cmd_bytes,
+                           char *data, int data_bytes);
+    tintptr server_dumby[100 - 50]; /* align, 100 minus the number of server
                                      functions above */
     /* common */
     tintptr handle; /* pointer to self as long */
@@ -176,3 +199,5 @@ struct mod
     char *screen_shmem_pixels;
     struct trans *trans;
 };
+
+#endif // XUP_H

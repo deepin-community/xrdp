@@ -22,19 +22,6 @@
 #include "arch.h"
 #include "parse.h"
 
-/*
- * TODO : Replace these with the definitions in xrdp_constants.h
- * where possible */
-#define CB_FORMAT_RAW                   0x0000
-#define CB_FORMAT_TEXT                  0x0001
-#define CB_FORMAT_DIB                   0x0008
-#define CB_FORMAT_UNICODETEXT           0x000D
-#define CB_FORMAT_HTML                  0xD010
-#define CB_FORMAT_PNG                   0xD011
-#define CB_FORMAT_JPEG                  0xD012
-#define CB_FORMAT_GIF                   0xD013
-#define CB_FORMAT_FILE                  0xC0BC
-
 /* these are the supported general types */
 #define XRDP_CB_TEXT   1
 #define XRDP_CB_BITMAP 2
@@ -65,8 +52,6 @@ struct clip_c2s /* client to server, pasting from mstsc to linux app */
     int xrdp_clip_type; /* XRDP_CB_TEXT, XRDP_CB_BITMAP, XRDP_CB_FILE, ... */
     int converted;
     int in_request; /* a data request has been sent to client */
-    int doing_response_ss; /* doing response short circuit */
-    Time clip_time;
 };
 
 struct clip_file_desc /* CLIPRDR_FILEDESCRIPTOR */
@@ -80,8 +65,15 @@ struct clip_file_desc /* CLIPRDR_FILEDESCRIPTOR */
     char cFileName[260 * 4]; /* Allow each UCS-16 char to become 32 bits */
 };
 
-int clipboard_out_unicode(struct stream *s, const char *text,
-                          int num_chars);
-int clipboard_in_unicode(struct stream *s, char *text, int *num_chars);
+/**
+ * Input a terminated UTF-16 string from a stream as UTF-8.
+ * @param s stream
+ * @param text UTF-8 String buffer
+ * @param text_len Length of above
+ * @return number of bytes copied from stream
+ */
+unsigned int
+clipboard_in_utf16_le_as_utf8(struct stream *s, char *text,
+                              unsigned int num_chars);
 
 #endif

@@ -8,9 +8,14 @@ man_MANS = \
   xrdp-keygen.8 \
   xrdp-sesadmin.8 \
   xrdp-sesman.8 \
-  xrdp-sesrun.8
+  xrdp-sesrun.8 \
+  xrdp-dumpfv1.8
 
-EXTRA_DIST = $(man_MANS:=.in)
+EXTRA_DIST = xrdp-mkfv1.8.in $(man_MANS:=.in)
+
+if USE_FREETYPE2
+  man_MANS += xrdp-mkfv1.8
+endif
 
 SUBST_VARS = sed \
    -e 's|@PACKAGE_VERSION[@]|$(PACKAGE_VERSION)|g' \
@@ -20,6 +25,7 @@ SUBST_VARS = sed \
    -e 's|@sysconfdir[@]|$(sysconfdir)|g' \
    -e 's|@socketdir[@]|$(socketdir)|g' \
    -e 's|@xrdpconfdir[@]|$(sysconfdir)/xrdp|g' \
+   -e 's|@xrdpdatadir[@]|$(datadir)/xrdp|g' \
    -e 's|@xrdphomeurl[@]|http://www.xrdp.org/|g'
 
 subst_verbose = $(subst_verbose_@AM_V@)

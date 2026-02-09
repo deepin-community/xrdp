@@ -12,6 +12,9 @@ rdesktop 1.8 and freerdp 1.1 (Remmina, et al).
 Don't forget that xrdp might have to be a member of the ssl-cert group to
 read your private key.
 
+You might use our automated script from:
+https://github.com/alexmyczko/autoexec.bat/blob/master/config.sys/install-rdp
+
 Audio
 -----
 

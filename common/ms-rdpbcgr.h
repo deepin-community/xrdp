@@ -52,18 +52,34 @@
 
 /* TS_UD_HEADER: type ((2.2.1.3.1) */
 /* TODO: to be renamed */
-#define SEC_TAG_CLI_INFO               0xc001 /* CS_CORE? */
-#define SEC_TAG_CLI_CRYPT              0xc002 /* CS_SECURITY? */
-#define SEC_TAG_CLI_CHANNELS           0xc003 /* CS_CHANNELS? */
-#define SEC_TAG_CLI_4                  0xc004 /* CS_CLUSTER? */
-#define SEC_TAG_CLI_MONITOR            0xc005 /* CS_MONITOR */
+#define SEC_TAG_CLI_INFO       0xc001 /* CS_CORE? */
+#define SEC_TAG_CLI_CRYPT      0xc002 /* CS_SECURITY? */
+#define SEC_TAG_CLI_CHANNELS   0xc003 /* CS_CHANNELS? */
+#define SEC_TAG_CLI_4          0xc004 /* CS_CLUSTER? */
+#define SEC_TAG_CLI_MONITOR    0xc005 /* CS_MONITOR */
+#define SEC_TAG_CLI_MONITOR_EX 0xc008 /* CS_MONITOR_EX */
+#define SEC_TAG_SRV_INFO       0x0c01 /* SC_CORE */
+#define SEC_TAG_SRV_CRYPT      0x0c02 /* SC_SECURITY */
+#define SEC_TAG_SRV_CHANNELS   0x0c03 /* SC_NET? */
+
 
 /* Client Core Data: colorDepth, postBeta2ColorDepth (2.2.1.3.2) */
-#define RNS_UD_COLOR_4BPP              0xCA00
-#define RNS_UD_COLOR_8BPP              0xCA01
-#define RNS_UD_COLOR_16BPP_555         0xCA02
-#define RNS_UD_COLOR_16BPP_565         0xCA03
-#define RNS_UD_COLOR_24BPP             0xCA04
+#define RNS_UD_COLOR_4BPP      0xCA00
+#define RNS_UD_COLOR_8BPP      0xCA01
+#define RNS_UD_COLOR_16BPP_555 0xCA02
+#define RNS_UD_COLOR_16BPP_565 0xCA03
+#define RNS_UD_COLOR_24BPP     0xCA04
+
+/* Client Core Data: supportedColorDepths (2.2.1.3.2) */
+#define RNS_UD_24BPP_SUPPORT 0x0001
+#define RNS_UD_16BPP_SUPPORT 0x0002
+#define RNS_UD_15BPP_SUPPORT 0x0004
+#define RNS_UD_32BPP_SUPPORT 0x0008
+
+/* Client Core Data: earlyCapabilityFlags (2.2.1.3.2) */
+#define RNS_UD_CS_WANT_32BPP_SESSION         0x0002
+#define RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU 0x0040
+#define RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL 0x0100
 
 /* Client Core Data: connectionType  (2.2.1.3.2) */
 #define CONNECTION_TYPE_MODEM          0x01
@@ -74,19 +90,37 @@
 #define CONNECTION_TYPE_LAN            0x06
 #define CONNECTION_TYPE_AUTODETECT     0x07
 
-/* Channel definition structure CHANNEL_DEF (2.2.1.3.4.1) */
+/* TS_UD_CS_NET (2.2.1.3.4) */
 /* This isn't explicitly named in MS-RDPBCGR */
+#define MAX_STATIC_CHANNELS            31
+
+/* Channel definition structure CHANNEL_DEF (2.2.1.3.4.1) */
 #define CHANNEL_NAME_LEN                7
 /* These names are also not explicitly defined in MS-RDPBCGR */
 #define CLIPRDR_SVC_CHANNEL_NAME        "cliprdr"
+#define DRDYNVC_SVC_CHANNEL_NAME        "drdynvc"
 #define RAIL_SVC_CHANNEL_NAME           "rail"
 #define RDPSND_SVC_CHANNEL_NAME         "rdpsnd"
 #define RDPDR_SVC_CHANNEL_NAME          "rdpdr"
 
-/* 2.2.1.3.6 Client Monitor Data - */
+/* 2.2.1.3.6 Client Monitor Data */
 /* monitorCount (4 bytes): A 32-bit, unsigned integer. The number of display */
 /* monitor definitions in the monitorDefArray field (the maximum allowed is 16). */
-#define CLIENT_MONITOR_DATA_MAXIMUM_MONITORS 16
+#define CLIENT_MONITOR_DATA_MAXIMUM_MONITORS               16
+
+/* 2.2.1.3.6 Client Monitor Data */
+/* The maximum width of the virtual desktop resulting from the union of the monitors */
+/* contained in the monitorDefArray field MUST NOT exceed 32,766 pixels. Similarly, */
+/* the maximum height of the virtual desktop resulting from the union of the monitors  */
+/* contained in the monitorDefArray field MUST NOT exceed 32,766 pixels. */
+/* The minimum permitted size of the virtual desktop is 200 x 200 pixels. */
+#define CLIENT_MONITOR_DATA_MINIMUM_VIRTUAL_DESKTOP_WIDTH  0xC8   // 200
+#define CLIENT_MONITOR_DATA_MINIMUM_VIRTUAL_DESKTOP_HEIGHT 0xC8   // 200
+#define CLIENT_MONITOR_DATA_MAXIMUM_VIRTUAL_DESKTOP_WIDTH  0x7FFE // 32766
+#define CLIENT_MONITOR_DATA_MAXIMUM_VIRTUAL_DESKTOP_HEIGHT 0x7FFE // 32766
+
+/* 2.2.1.3.6.1 Monitor Definition (TS_MONITOR_DEF) */
+#define TS_MONITOR_PRIMARY 0x00000001
 
 /* Options field */
 /* NOTE: XR_ prefixed to avoid conflict with FreeRDP */
@@ -116,6 +150,9 @@
 #define RDP_LOGON_LEAVE_AUDIO          0x2000
 #define RDP_LOGON_RAIL                 0x8000
 
+/* Extended Info Packet: clientAddress (2.2.1.11.1.1.1) */
+#define EXTENDED_INFO_MAX_CLIENT_ADDR_LENGTH 80
+
 /* Extended Info Packet: performanceFlags (2.2.1.11.1.1.1) */
 /* TODO: to be renamed */
 #define RDP5_DISABLE_NOTHING           0x00
@@ -126,9 +163,16 @@
 #define RDP5_NO_CURSOR_SHADOW          0x20
 #define RDP5_NO_CURSORSETTINGS         0x40 /* disables cursor blinking */
 
+/* LICENSE_PREAMBLE (2.2.1.12.1.1) */
+#define ERROR_ALERT                    0xff
+#define PREAMBLE_VERSION_3_0           0x03
+
 /* LICENSE_BINARY_BLOB (2.2.1.12.1.2) */
-#define LICENCE_TAG_USER               0x000f /* BB_CLIENT_USER_NAME_BLOB */
-#define LICENCE_TAG_HOST               0x0010 /* BB_CLIENT_MACHINE_NAME_BLOB */
+#define BB_ERROR_BLOB                  0x0004
+
+/* LICENSE_ERROR_MESSAGE (2.2.1.12.1.3) */
+#define STATUS_VALID_CLIENT            0x00000007
+#define ST_NO_TRANSITION               0x00000002
 
 /* Maps to generalCapabilitySet in T.128 page 138 */
 
@@ -357,11 +401,11 @@
 
 /* Bitmap Codec: codecGUID (2.2.7.2.10.1.1) */
 
-/* CODEC_GUID_NSCODEC  CA8D1BB9-000F-154F-589FAE2D1A87E2D6 */
+/* CODEC_GUID_NSCODEC  CA8D1BB9-000F-154F-589F-AE2D1A87E2D6 */
 #define XR_CODEC_GUID_NSCODEC \
     "\xb9\x1b\x8d\xca\x0f\x00\x4f\x15\x58\x9f\xae\x2d\x1a\x87\xe2\xd6"
 
-/* CODEC_GUID_REMOTEFX 76772F12-BD72-4463-AFB3B73C9C6F7886 */
+/* CODEC_GUID_REMOTEFX 76772F12-BD72-4463-AFB3-B73C9C6F7886 */
 #define XR_CODEC_GUID_REMOTEFX \
     "\x12\x2F\x77\x76\x72\xBD\x63\x44\xAF\xB3\xB7\x3C\x9C\x6F\x78\x86"
 
@@ -369,17 +413,21 @@
 #define XR_CODEC_GUID_IMAGE_REMOTEFX \
     "\xD4\xCC\x44\x27\x8A\x9D\x74\x4E\x80\x3C\x0E\xCB\xEE\xA1\x9C\x54"
 
-/* MFVideoFormat_H264  0x34363248-0000-0010-800000AA00389B71 */
+/* MFVideoFormat_H264  34363248-0000-0010-8000-00AA00389B71 */
 #define XR_CODEC_GUID_H264 \
     "\x48\x32\x36\x34\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71"
 
-/* CODEC_GUID_JPEG     1BAF4CE6-9EED-430C-869ACB8B37B66237 */
+/* CODEC_GUID_JPEG     1BAF4CE6-9EED-430C-869A-CB8B37B66237 */
 #define XR_CODEC_GUID_JPEG \
     "\xE6\x4C\xAF\x1B\xED\x9E\x0C\x43\x86\x9A\xCB\x8B\x37\xB6\x62\x37"
 
-/* CODEC_GUID_PNG      0E0C858D-28E0-45DB-ADAA0F83E57CC560 */
+/* CODEC_GUID_PNG      0E0C858D-28E0-45DB-ADAA-0F83E57CC560 */
 #define XR_CODEC_GUID_PNG \
     "\x8D\x85\x0C\x0E\xE0\x28\xDB\x45\xAD\xAA\x0F\x83\xE5\x7C\xC5\x60"
+
+/* CODEC_GUID_IGNORE   0C4351A6-3535-42AE-910C-CDFCE5760B58 */
+#define XR_CODEC_GUID_IGNORE \
+    "\xA6\x51\x43\x0C\x35\x35\xAE\x42\x91\x0C\xCD\xFC\xE5\x76\x0B\x58"
 
 /* PDU Types (2.2.8.1.1.1.1) */
 #define PDUTYPE_DEMANDACTIVEPDU        0x1
@@ -412,17 +460,14 @@
 #define RDP_DATA_PDU_LOGON             38
 #define RDP_DATA_PDU_FONT2             39
 #define RDP_DATA_PDU_DISCONNECT        47
+#define PDUTYPE2_MONITOR_LAYOUT_PDU    55
 
 /* TS_SECURITY_HEADER: flags (2.2.8.1.1.2.1) */
-/* TODO: to be renamed */
-#define SEC_CLIENT_RANDOM              0x0001 /* SEC_EXCHANGE_PKT? */
+#define SEC_EXCHANGE_PKT               0x0001
 #define SEC_ENCRYPT                    0x0008
-#define SEC_LOGON_INFO                 0x0040 /* SEC_INFO_PKT */
-#define SEC_LICENCE_NEG                0x0080 /* SEC_LICENSE_PKT */
-
-#define SEC_TAG_SRV_INFO               0x0c01 /* SC_CORE */
-#define SEC_TAG_SRV_CRYPT              0x0c02 /* SC_SECURITY */
-#define SEC_TAG_SRV_CHANNELS           0x0c03 /* SC_NET? */
+#define SEC_INFO_PKT                   0x0040
+#define SEC_LICENSE_PKT                0x0080
+#define SEC_LICENSE_ENCRYPT_CS         0x0280
 
 /* Slow-Path Input Event: messageType (2.2.8.1.1.3.1.1) */
 /* TODO: to be renamed */
@@ -547,5 +592,9 @@
 #define RDP_MPPC_RESET                 0x40
 #define RDP_MPPC_FLUSH                 0x80
 #define RDP_MPPC_DICT_SIZE             8192 /* RDP 4.0 | MS-RDPBCGR 3.1.8 */
+
+/* largePointerSupprtFlags (2.2.7.2.7) */
+#define LARGE_POINTER_FLAG_96x96   0x00000001
+#define LARGE_POINTER_FLAG_384x384 0x00000002
 
 #endif /* MS_RDPBCGR_H */

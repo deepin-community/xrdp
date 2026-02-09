@@ -170,7 +170,7 @@ xrdp_listen_get_startup_params(struct xrdp_listen *self)
     startup_params = self->startup_params;
     port_override = startup_params->port[0] != 0;
     fork_override = startup_params->fork;
-    fd = g_file_open(startup_params->xrdp_ini);
+    fd = g_file_open_ro(startup_params->xrdp_ini);
     if (fd != -1)
     {
         names = list_create();
@@ -716,47 +716,45 @@ xrdp_listen_process_startup_params(struct xrdp_listen *self)
             if (startup_params->tcp_send_buffer_bytes > 0)
             {
                 bytes = startup_params->tcp_send_buffer_bytes;
-                LOG(LOG_LEVEL_INFO, "setting send buffer to %d bytes",
-                    bytes);
                 if (g_sck_set_send_buffer_bytes(ltrans->sck, bytes) != 0)
                 {
                     LOG(LOG_LEVEL_WARNING, "error setting send buffer");
                 }
+                else if (g_sck_get_send_buffer_bytes(ltrans->sck, &bytes) != 0)
+                {
+                    LOG(LOG_LEVEL_WARNING, "error getting send buffer");
+                }
+                else if (bytes != startup_params->tcp_send_buffer_bytes)
+                {
+                    LOG(LOG_LEVEL_WARNING, "send buffer set to %d "
+                        "bytes but %d bytes requested", bytes,
+                        startup_params->tcp_send_buffer_bytes);
+                }
                 else
                 {
-                    if (g_sck_get_send_buffer_bytes(ltrans->sck, &bytes) != 0)
-                    {
-                        LOG(LOG_LEVEL_WARNING, "error getting send "
-                            "buffer");
-                    }
-                    else
-                    {
-                        LOG(LOG_LEVEL_INFO, "send buffer set to %d "
-                            "bytes", bytes);
-                    }
+                    LOG(LOG_LEVEL_INFO, "send buffer set to %d bytes", bytes);
                 }
             }
             if (startup_params->tcp_recv_buffer_bytes > 0)
             {
                 bytes = startup_params->tcp_recv_buffer_bytes;
-                LOG(LOG_LEVEL_INFO, "setting recv buffer to %d bytes",
-                    bytes);
                 if (g_sck_set_recv_buffer_bytes(ltrans->sck, bytes) != 0)
                 {
                     LOG(LOG_LEVEL_WARNING, "error setting recv buffer");
                 }
+                else if (g_sck_get_recv_buffer_bytes(ltrans->sck, &bytes) != 0)
+                {
+                    LOG(LOG_LEVEL_WARNING, "error getting recv buffer");
+                }
+                else if (bytes != startup_params->tcp_recv_buffer_bytes)
+                {
+                    LOG(LOG_LEVEL_WARNING, "recv buffer set to %d "
+                        "bytes but %d bytes requested", bytes,
+                        startup_params->tcp_recv_buffer_bytes);
+                }
                 else
                 {
-                    if (g_sck_get_recv_buffer_bytes(ltrans->sck, &bytes) != 0)
-                    {
-                        LOG(LOG_LEVEL_WARNING, "error getting recv "
-                            "buffer");
-                    }
-                    else
-                    {
-                        LOG(LOG_LEVEL_INFO, "recv buffer set to %d "
-                            "bytes", bytes);
-                    }
+                    LOG(LOG_LEVEL_INFO, "recv buffer set to %d bytes", bytes);
                 }
             }
         }
@@ -847,6 +845,30 @@ xrdp_listen_conn_in(struct trans *self, struct trans *new_self)
 }
 
 /*****************************************************************************/
+/**
+ * Process pending SIGCHLD events in the listen process
+ *
+ * The main reason for this is to log children which fail
+ * on a signal. This should be investigated.
+ */
+static void
+process_pending_sigchld_events(void)
+{
+    struct exit_status e;
+    int pid;
+
+    while ((pid = g_waitchild(&e)) > 0)
+    {
+        if (e.reason == E_XR_SIGNAL)
+        {
+            char sigstr[MAXSTRSIGLEN];
+            LOG(LOG_LEVEL_ERROR,
+                "Child %d terminated unexpectedly with signal %s",
+                pid, g_sig2text(e.val, sigstr));
+        }
+    }
+}
+/*****************************************************************************/
 /* wait for incoming connections
    passes through trans_listen_address return value */
 int
@@ -858,6 +880,7 @@ xrdp_listen_main_loop(struct xrdp_listen *self)
     int timeout;
     intptr_t robjs[32];
     intptr_t term_obj;
+    intptr_t sigchld_obj;
     intptr_t sync_obj;
     intptr_t done_obj;
     struct trans *ltrans;
@@ -875,7 +898,8 @@ xrdp_listen_main_loop(struct xrdp_listen *self)
         self->status = -1;
         return 1;
     }
-    term_obj = g_get_term_event(); /*Global termination event */
+    term_obj = g_get_term(); /*Global termination event */
+    sigchld_obj = g_get_sigchld();
     sync_obj = g_get_sync_event();
     done_obj = self->pro_done_event;
     cont = 1;
@@ -884,6 +908,7 @@ xrdp_listen_main_loop(struct xrdp_listen *self)
         /* build the wait obj list */
         robjs_count = 0;
         robjs[robjs_count++] = term_obj;
+        robjs[robjs_count++] = sigchld_obj;
         robjs[robjs_count++] = sync_obj;
         robjs[robjs_count++] = done_obj;
         timeout = -1;
@@ -916,6 +941,12 @@ xrdp_listen_main_loop(struct xrdp_listen *self)
                 "Received termination signal, stopping the server accept new "
                 "connections thread");
             break;
+        }
+
+        if (g_is_wait_obj_set(sigchld_obj)) /* SIGCHLD caught */
+        {
+            g_set_sigchld(0);
+            process_pending_sigchld_events();
         }
 
         /* some function must be processed by this thread */

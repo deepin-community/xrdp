@@ -34,6 +34,7 @@
 #include "xrdp_constants.h"
 #include "xrdp_sockets.h"
 #include "chansrv_common.h"
+#include "chansrv_config.h"
 #include "list.h"
 #include "audin.h"
 
@@ -60,6 +61,7 @@ static lame_global_flags *g_lame_encoder = 0;
 
 extern int g_rdpsnd_chan_id;    /* in chansrv.c */
 extern int g_display_num;       /* in chansrv.c */
+extern struct config_chansrv *g_cfg; /* in chansrv.c */
 
 /* audio out: sound_server -> xrdp -> NeutrinoRDP */
 static struct trans *g_audio_l_trans_out = 0; /* listener */
@@ -72,7 +74,7 @@ static struct trans *g_audio_c_trans_in = 0;  /* connection */
 static int    g_training_sent_time = 0;
 static int    g_cBlockNo = 0;
 static int    g_bytes_in_stream = 0;
-FIFO   g_in_fifo;
+struct fifo  *g_in_fifo;
 int    g_bytes_in_fifo = 0;
 static int    g_time_diff = 0;
 static int    g_best_time_diff = 0;
@@ -369,14 +371,15 @@ sound_process_output_format(int aindex, int wFormatTag, int nChannels,
                             int nBlockAlign, int wBitsPerSample,
                             int cbSize, char *data)
 {
-    LOG_DEVEL(LOG_LEVEL_INFO, "sound_process_output_format:");
-    LOG_DEVEL(LOG_LEVEL_INFO, "      wFormatTag      %d", wFormatTag);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      nChannels       %d", nChannels);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      nSamplesPerSec  %d", nSamplesPerSec);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      nAvgBytesPerSec %d", nAvgBytesPerSec);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      nBlockAlign     %d", nBlockAlign);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      wBitsPerSample  %d", wBitsPerSample);
-    LOG_DEVEL(LOG_LEVEL_INFO, "      cbSize          %d", cbSize);
+    LOG(LOG_LEVEL_INFO, "sound_process_output_format:");
+    LOG(LOG_LEVEL_INFO, "      wFormatNo       %d", aindex);
+    LOG(LOG_LEVEL_INFO, "      wFormatTag      %s", audin_wave_format_tag_to_str(wFormatTag));
+    LOG(LOG_LEVEL_INFO, "      nChannels       %d", nChannels);
+    LOG(LOG_LEVEL_INFO, "      nSamplesPerSec  %d", nSamplesPerSec);
+    LOG(LOG_LEVEL_INFO, "      nAvgBytesPerSec %d", nAvgBytesPerSec);
+    LOG(LOG_LEVEL_INFO, "      nBlockAlign     %d", nBlockAlign);
+    LOG(LOG_LEVEL_INFO, "      wBitsPerSample  %d", wBitsPerSample);
+    LOG(LOG_LEVEL_INFO, "      cbSize          %d", cbSize);
 
     LOG_DEVEL_HEXDUMP(LOG_LEVEL_TRACE, "", data, cbSize);
 
@@ -898,6 +901,8 @@ sound_send_wave_data_chunk(char *data, int data_bytes)
     format_index = g_current_client_format_index;
     data_bytes = sound_wave_compress(data, data_bytes, &format_index);
 
+    LOG(LOG_LEVEL_TRACE, "sound_send_wave_data_chunk: wFormatNo %d", format_index);
+
     /* part one of 2 PDU wave info */
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "sound_send_wave_data_chunk: sending %d bytes", data_bytes);
@@ -1057,7 +1062,7 @@ sound_process_wave_confirm(struct stream *s, int size)
     in_uint8(s, cConfirmedBlockNo);
     time_diff = time - g_sent_time[cConfirmedBlockNo & 0xff];
 
-    LOG(LOG_LEVEL_DEBUG, "sound_process_wave_confirm: wTimeStamp %d, "
+    LOG(LOG_LEVEL_TRACE, "sound_process_wave_confirm: wTimeStamp %d, "
         "cConfirmedBlockNo %d time diff %d",
         wTimeStamp, cConfirmedBlockNo, time_diff);
 
@@ -1089,12 +1094,42 @@ sound_process_wave_confirm(struct stream *s, int size)
 static int
 process_pcm_message(int id, int size, struct stream *s)
 {
+    static int sending_silence = 0;
+    static int silence_start_time = 0;
     switch (id)
     {
         case 0:
+            if ((g_client_does_fdk_aac || g_client_does_mp3lame) && sending_silence)
+            {
+                if ((g_time3() - silence_start_time) < (int)g_cfg->msec_do_not_send)
+                {
+                    /* do not send data within msec_do_not_send msec after SNDC_CLOSE is sent, to avoid stutter. setting from sesman.ini */
+                    return 0;
+                }
+                sending_silence = 0;
+            }
             return sound_send_wave_data(s->p, size);
             break;
         case 1:
+            if ((g_client_does_fdk_aac || g_client_does_mp3lame) && sending_silence == 0)
+            {
+                /* workaround for mstsc.exe. send silence data before send close */
+                int send_silence_times = g_client_does_fdk_aac ? g_cfg->num_silent_frames_aac : g_cfg->num_silent_frames_mp3;  /* setting from sesman.ini */
+                char *buf = (char *) g_malloc(g_bbuf_size, 0);
+                if (buf != NULL)
+                {
+                    int i;
+                    silence_start_time = g_time3();
+                    sending_silence = 1;
+                    for (i = 0; i < send_silence_times; i++)
+                    {
+                        g_memset(buf, 0, g_bbuf_size);
+                        sound_send_wave_data_chunk(buf, g_bbuf_size);
+                    }
+                    free(buf);
+                    g_time_diff = 0;
+                }
+            }
             return sound_send_close();
             break;
         default:
@@ -1226,6 +1261,15 @@ sound_sndsrvr_source_conn_in(struct trans *trans, struct trans *new_trans)
 }
 
 /*****************************************************************************/
+/* Item destructor for g_in_fifo
+ */
+static void
+in_fifo_item_destructor(void *item, void *closure)
+{
+    xstream_free((struct stream *)item);
+}
+
+/*****************************************************************************/
 int
 sound_init(void)
 {
@@ -1242,7 +1286,7 @@ sound_init(void)
     sound_start_source_listener();
 
     /* save data from sound_server_source */
-    fifo_init(&g_in_fifo, 100);
+    g_in_fifo = fifo_create(in_fifo_item_destructor);
 
     g_client_does_fdk_aac = 0;
     g_client_fdk_aac_index = 0;
@@ -1258,6 +1302,12 @@ sound_init(void)
         g_ack_time_diff = list_create();
     }
     list_clear(g_ack_time_diff);
+
+#if defined(XRDP_FDK_AAC) || defined(XRDP_MP3LAME)
+    LOG(LOG_LEVEL_INFO, "num_silent_frames_aac: %d", g_cfg->num_silent_frames_aac);
+    LOG(LOG_LEVEL_INFO, "num_silent_frames_mp3: %d", g_cfg->num_silent_frames_mp3);
+    LOG(LOG_LEVEL_INFO, "msec_do_not_send: %d", g_cfg->msec_do_not_send);
+#endif
 
     return 0;
 }
@@ -1300,7 +1350,7 @@ sound_deinit(void)
     }
 #endif
 
-    fifo_deinit(&g_in_fifo);
+    fifo_delete(g_in_fifo, NULL);
 
     return 0;
 }
@@ -1620,7 +1670,6 @@ sound_process_input_formats(struct stream *s, int size)
 
     return 0;
 }
-
 /**
  *
  *****************************************************************************/
@@ -1633,10 +1682,7 @@ sound_input_start_recording(void)
     LOG_DEVEL(LOG_LEVEL_DEBUG, "sound_input_start_recording:");
 
     /* if there is any data in FIFO, discard it */
-    while ((s = (struct stream *) fifo_remove(&g_in_fifo)) != NULL)
-    {
-        xstream_free(s);
-    }
+    fifo_clear(g_in_fifo, NULL);
     g_bytes_in_fifo = 0;
 
     xstream_new(s, 1024);
@@ -1712,7 +1758,7 @@ sound_process_input_data(struct stream *s, int bytes)
     g_memcpy(ls->data, s->p, bytes);
     ls->p += bytes;
     s_mark_end(ls);
-    fifo_insert(&g_in_fifo, (void *) ls);
+    fifo_add_item(g_in_fifo, (void *) ls);
     g_bytes_in_fifo += bytes;
 
     return 0;
@@ -1765,7 +1811,7 @@ sound_sndsrvr_source_data_in(struct trans *trans)
         {
             if (g_stream_inp == NULL)
             {
-                g_stream_inp = (struct stream *) fifo_remove(&g_in_fifo);
+                g_stream_inp = (struct stream *) fifo_remove_item(g_in_fifo);
                 if (g_stream_inp != NULL)
                 {
                     g_bytes_in_fifo -= g_stream_inp->size;
@@ -1848,11 +1894,11 @@ sound_sndsrvr_source_data_in(struct trans *trans)
 static int
 sound_start_source_listener(void)
 {
-    char port[1024];
+    char port[XRDP_SOCKETS_MAXPATH];
 
     g_audio_l_trans_in = trans_create(TRANS_MODE_UNIX, 128 * 1024, 8192);
     g_audio_l_trans_in->is_term = g_is_term;
-    g_snprintf(port, 255, CHANSRV_PORT_IN_STR, g_display_num);
+    g_snprintf(port, sizeof(port), CHANSRV_PORT_IN_STR, g_getuid(), g_display_num);
     g_audio_l_trans_in->trans_conn_in = sound_sndsrvr_source_conn_in;
     if (trans_listen(g_audio_l_trans_in, port) != 0)
     {
@@ -1867,11 +1913,11 @@ sound_start_source_listener(void)
 static int
 sound_start_sink_listener(void)
 {
-    char port[1024];
+    char port[XRDP_SOCKETS_MAXPATH];
 
     g_audio_l_trans_out = trans_create(TRANS_MODE_UNIX, 128 * 1024, 8192);
     g_audio_l_trans_out->is_term = g_is_term;
-    g_snprintf(port, 255, CHANSRV_PORT_OUT_STR, g_display_num);
+    g_snprintf(port, sizeof(port), CHANSRV_PORT_OUT_STR, g_getuid(), g_display_num);
     g_audio_l_trans_out->trans_conn_in = sound_sndsrvr_sink_conn_in;
     if (trans_listen(g_audio_l_trans_out, port) != 0)
     {

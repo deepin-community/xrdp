@@ -46,7 +46,7 @@
 #define AUDIN_NAME "AUDIO_INPUT"
 #define AUDIN_FLAGS  1 /* WTS_CHANNEL_OPTION_DYNAMIC */
 
-extern FIFO g_in_fifo; /* in sound.c */
+extern struct fifo *g_in_fifo; /* in sound.c */
 extern int g_bytes_in_fifo; /* in sound.c */
 
 struct xr_wave_format_ex
@@ -87,6 +87,27 @@ static struct xr_wave_format_ex *g_server_formats[] =
 static struct xr_wave_format_ex **g_client_formats = NULL;
 
 static int g_current_format = 0; /* index in g_client_formats */
+
+/*****************************************************************************/
+
+/*
+ * This can be called from sound.c because it includes audin.h.
+ */
+
+const char *
+audin_wave_format_tag_to_str(int tag)
+{
+    return
+        (tag == WAVE_FORMAT_PCM)        ? "WAVE_FORMAT_PCM" :
+        (tag == WAVE_FORMAT_ADPCM)      ? "WAVE_FORMAT_ADPCM" :
+        (tag == WAVE_FORMAT_ALAW)       ? "WAVE_FORMAT_ALAW" :
+        (tag == WAVE_FORMAT_MULAW)      ? "WAVE_FORMAT_MULAW" :
+        (tag == WAVE_FORMAT_MULAW)      ? "WAVE_FORMAT_MULAW" :
+        (tag == WAVE_FORMAT_MPEGLAYER3) ? "WAVE_FORMAT_MPEGLAYER3" :
+        (tag == WAVE_FORMAT_OPUS)       ? "WAVE_FORMAT_OPUS" :
+        (tag == WAVE_FORMAT_AAC)        ? "WAVE_FORMAT_AAC" :
+        "UNKNOWN";
+}
 
 /*****************************************************************************/
 static int
@@ -261,9 +282,17 @@ audin_process_formats(int chan_id, struct stream *s)
         in_uint16_le(s, wf->nBlockAlign);
         in_uint16_le(s, wf->wBitsPerSample);
         in_uint16_le(s, wf->cbSize);
-        LOG_DEVEL(LOG_LEVEL_INFO, "audin_process_formats: recved format wFormatTag 0x%4.4x "
-                  "nChannels %d nSamplesPerSec %d",
-                  wf->wFormatTag, wf->nChannels, wf->nSamplesPerSec);
+
+        LOG(LOG_LEVEL_INFO, "audin_process_formats:");
+        LOG(LOG_LEVEL_INFO, "      wFormatNo       %d", index);
+        LOG(LOG_LEVEL_INFO, "      wFormatTag      %s", audin_wave_format_tag_to_str(wf->wFormatTag));
+        LOG(LOG_LEVEL_INFO, "      nChannels       %d", wf->nChannels);
+        LOG(LOG_LEVEL_INFO, "      nSamplesPerSec  %d", wf->nSamplesPerSec);
+        LOG(LOG_LEVEL_INFO, "      nAvgBytesPerSec %d", wf->nAvgBytesPerSec);
+        LOG(LOG_LEVEL_INFO, "      nBlockAlign     %d", wf->nBlockAlign);
+        LOG(LOG_LEVEL_INFO, "      wBitsPerSample  %d", wf->wBitsPerSample);
+        LOG(LOG_LEVEL_INFO, "      cbSize          %d", wf->cbSize);
+
         if (wf->cbSize > 0)
         {
             if (!s_check_rem(s, wf->cbSize))
@@ -317,7 +346,7 @@ audin_process_data(int chan_id, struct stream *s)
     g_memcpy(ls->data, s->p, data_bytes);
     ls->p += data_bytes;
     s_mark_end(ls);
-    fifo_insert(&g_in_fifo, (void *) ls);
+    fifo_add_item(g_in_fifo, (void *) ls);
     g_bytes_in_fifo += data_bytes;
 
     return 0;
@@ -485,19 +514,15 @@ int
 audin_start(void)
 {
     int error;
-    struct stream *s;
 
     LOG_DEVEL(LOG_LEVEL_INFO, "audin_start:");
-    if (g_audin_chanid != 0)
+    if (g_audin_chanid != 0 || g_in_fifo == NULL)
     {
         return 1;
     }
 
     /* if there is any data in FIFO, discard it */
-    while ((s = (struct stream *) fifo_remove(&g_in_fifo)) != NULL)
-    {
-        xstream_free(s);
-    }
+    fifo_clear(g_in_fifo, NULL);
     g_bytes_in_fifo = 0;
 
     error = chansrv_drdynvc_open(AUDIN_NAME, AUDIN_FLAGS,

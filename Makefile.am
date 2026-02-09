@@ -11,7 +11,6 @@ EXTRA_DIST = \
   astyle_config.as \
   bootstrap \
   coding_style.md \
-  fontdump \
   m4 \
   vrplayer
 
@@ -39,24 +38,37 @@ else
 RFXCODECDIR =
 endif
 
+if XRDP_ULALACA
+ULALACADIR = ulalaca
+else
+ULALACADIR =
+endif
+
+# This should not be dictionary order but build order
 SUBDIRS = \
+  third_party \
+  third_party/tomlc99 \
   common \
   vnc \
   xup \
   mc \
   $(NEUTRINORDPDIR) \
+  libipm \
   libxrdp \
   $(PAINTERDIR) \
   $(RFXCODECDIR) \
   sesman \
   xrdp \
+  fontutils \
   keygen \
+  waitforx \
   docs \
   instfiles \
   genkeymap \
   xrdpapi \
   pkgconfig \
   $(XRDPVRDIR) \
+  $(ULALACADIR) \
   tests \
   tools
 

@@ -22,13 +22,14 @@
 #include <config_ac.h>
 #endif
 
+#include <limits.h>
+
 #include "xrdp.h"
 #include "string_calls.h"
 
 #if defined(XRDP_PAINTER)
 #include <painter.h> /* libpainter */
 #endif
-
 
 
 #if defined(XRDP_PAINTER)
@@ -92,35 +93,44 @@ xrdp_painter_send_dirty(struct xrdp_painter *self)
         Bpp = 4;
     }
 
-    jndex = 0;
-    error = xrdp_region_get_rect(self->dirty_region, jndex, &rect);
-    while (error == 0)
+    if (self->session->client_info->gfx)
     {
-        cx = rect.right - rect.left;
-        cy = rect.bottom - rect.top;
-        ldata = (char *)g_malloc(cx * cy * Bpp, 0);
-        if (ldata == 0)
-        {
-            return 1;
-        }
-        src = self->wm->screen->data;
-        src += self->wm->screen->line_size * rect.top;
-        src += rect.left * Bpp;
-        dst = ldata;
-        for (index = 0; index < cy; index++)
-        {
-            g_memcpy(dst, src, cx * Bpp);
-            src += self->wm->screen->line_size;
-            dst += cx * Bpp;
-        }
-        LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_send_dirty: x %d y %d cx %d cy %d",
-                  rect.left, rect.top, cx, cy);
-        libxrdp_send_bitmap(self->session, cx, cy, bpp,
-                            ldata, rect.left, rect.top, cx, cy);
-        g_free(ldata);
-
-        jndex++;
+        xrdp_mm_efgx_add_dirty_region_to_planar_list(self->wm->mm,
+                self->dirty_region);
+    }
+    else
+    {
+        jndex = 0;
         error = xrdp_region_get_rect(self->dirty_region, jndex, &rect);
+        while (error == 0)
+        {
+            cx = rect.right - rect.left;
+            cy = rect.bottom - rect.top;
+            ldata = (char *)g_malloc(cx * cy * Bpp, 0);
+            if (ldata == 0)
+            {
+                return 1;
+            }
+            src = self->wm->screen->data;
+            src += self->wm->screen->line_size * rect.top;
+            src += rect.left * Bpp;
+            dst = ldata;
+            for (index = 0; index < cy; index++)
+            {
+                g_memcpy(dst, src, cx * Bpp);
+                src += self->wm->screen->line_size;
+                dst += cx * Bpp;
+            }
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_send_dirty:"
+                      " x %d y %d cx %d cy %d",
+                      rect.left, rect.top, cx, cy);
+            libxrdp_send_bitmap(self->session, cx, cy, bpp,
+                                ldata, rect.left, rect.top, cx, cy);
+            g_free(ldata);
+
+            jndex++;
+            error = xrdp_region_get_rect(self->dirty_region, jndex, &rect);
+        }
     }
 
     xrdp_region_delete(self->dirty_region);
@@ -144,8 +154,8 @@ xrdp_painter_create(struct xrdp_wm *wm, struct xrdp_session *session)
     self->rop = 0xcc; /* copy will use 0xcc */
     self->clip_children = 1;
 
-
-    if (self->session->client_info->no_orders_supported)
+    if (self->session->client_info->no_orders_supported ||
+            self->session->client_info->gfx)
     {
 #if defined(XRDP_PAINTER)
         if (painter_create(&(self->painter)) != PT_ERROR_NONE)
@@ -429,76 +439,62 @@ xrdp_painter_rop(int rop, int src, int dst)
 int
 xrdp_painter_text_width(struct xrdp_painter *self, const char *text)
 {
-    int index;
-    int rv;
-    int len;
-    struct xrdp_font_char *font_item;
-    twchar *wstr;
+    return xrdp_painter_text_width_count(self, text, UINT_MAX);
+}
 
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_text_width:");
+/*****************************************************************************/
+int
+xrdp_painter_text_width_count(struct xrdp_painter *self, const char *text,
+                              unsigned int c32_count)
+{
+    int rv = 0;
+
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_text_width_count:");
     xrdp_painter_font_needed(self);
 
-    if (self->font == 0)
+    if (self->font != NULL && text != NULL)
     {
-        return 0;
+        unsigned int index;
+        for (index = 0 ; index < c32_count; ++index)
+        {
+            struct xrdp_font_char *font_item;
+            char32_t c32 = utf8_get_next_char(&text, NULL);
+            if (c32 == 0)
+            {
+                break; // Terminator
+            }
+            font_item = XRDP_FONT_GET_CHAR(self->font, c32);
+            rv += font_item->incby;
+        }
     }
 
-    if (text == 0)
-    {
-        return 0;
-    }
-
-    rv = 0;
-    len = g_mbstowcs(0, text, 0);
-    wstr = (twchar *)g_malloc((len + 2) * sizeof(twchar), 0);
-    g_mbstowcs(wstr, text, len + 1);
-
-    for (index = 0; index < len; index++)
-    {
-        font_item = self->font->font_items + wstr[index];
-        rv = rv + font_item->incby;
-    }
-
-    g_free(wstr);
     return rv;
 }
 
 /*****************************************************************************/
 int
-xrdp_painter_text_height(struct xrdp_painter *self, const char *text)
+xrdp_painter_repeated_char_width(struct xrdp_painter *self,
+                                 char32_t chr, unsigned int repeat_count)
 {
-    int index;
-    int rv;
-    int len;
-    struct xrdp_font_char *font_item;
-    twchar *wstr;
+    int rv = 0;
 
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_text_height:");
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_repeated_char_width:");
     xrdp_painter_font_needed(self);
 
-    if (self->font == 0)
+    if (self->font != NULL)
     {
-        return 0;
+        struct xrdp_font_char *font_item = XRDP_FONT_GET_CHAR(self->font, chr);
+        rv = font_item->incby * repeat_count;
     }
 
-    if (text == 0)
-    {
-        return 0;
-    }
-
-    rv = 0;
-    len = g_mbstowcs(0, text, 0);
-    wstr = (twchar *)g_malloc((len + 2) * sizeof(twchar), 0);
-    g_mbstowcs(wstr, text, len + 1);
-
-    for (index = 0; index < len; index++)
-    {
-        font_item = self->font->font_items + wstr[index];
-        rv = MAX(rv, font_item->height);
-    }
-
-    g_free(wstr);
     return rv;
+}
+
+/*****************************************************************************/
+unsigned int
+xrdp_painter_font_body_height(const struct xrdp_painter *self)
+{
+    return (self->font == NULL) ? 0 : self->font->body_height;
 }
 
 /*****************************************************************************/
@@ -796,10 +792,11 @@ xrdp_painter_fill_rect(struct xrdp_painter *self,
 }
 
 /*****************************************************************************/
-int
-xrdp_painter_draw_text(struct xrdp_painter *self,
-                       struct xrdp_bitmap *dst,
-                       int x, int y, const char *text)
+static int
+xrdp_painter_draw_utf32(struct xrdp_painter *self,
+                        struct xrdp_bitmap *dst,
+                        int x, int y,
+                        char32_t utf32[], unsigned int utf32len)
 {
     int i;
     int f;
@@ -808,8 +805,7 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
     int x1;
     int y1;
     int flags;
-    int len;
-    int index;
+    unsigned int index;
     int total_width;
     int total_height;
     int dx;
@@ -821,7 +817,6 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
     struct xrdp_rect draw_rect;
     struct xrdp_font *font;
     struct xrdp_font_char *font_item;
-    twchar *wstr;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_painter_draw_text:");
 
@@ -830,10 +825,7 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
         return 0;
     }
 
-
-    len = g_mbstowcs(0, text, 0);
-
-    if (len < 1)
+    if (utf32len < 1)
     {
         return 0;
     }
@@ -862,19 +854,24 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
         if (dst->type != WND_TYPE_OFFSCREEN)
         {
             ldst = self->wm->screen;
-            /* convert to wide char */
-            wstr = (twchar *)g_malloc((len + 2) * sizeof(twchar), 0);
-            g_mbstowcs(wstr, text, len + 1);
             font = self->font;
+
+            // Calculate total width and height fields
             total_width = 0;
             total_height = 0;
-            for (index = 0; index < len; index++)
+
+            for (index = 0 ; index < utf32len; ++index)
             {
-                font_item = font->font_items + wstr[index];
+                font_item = XRDP_FONT_GET_CHAR(font, utf32[index]);
                 k = font_item->incby;
                 total_width += k;
-                total_height = MAX(total_height, font_item->height);
+                /* Use the nominal height of the font to work out the
+                 * actual height of this glyph */
+                int glyph_height =
+                    font->body_height + font_item->baseline + font_item->height;
+                total_height = MAX(total_height, glyph_height);
             }
+
             xrdp_bitmap_get_screen_clip(dst, self, &clip_rect, &dx, &dy);
             region = xrdp_region_create(self->wm);
             xrdp_wm_get_vis_region(self->wm, dst, x, y,
@@ -902,9 +899,9 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
                                      draw_rect.left, draw_rect.top,
                                      draw_rect.right - draw_rect.left,
                                      draw_rect.bottom - draw_rect.top);
-                    for (index = 0; index < len; index++)
+                    for (index = 0 ; index < utf32len; ++index)
                     {
-                        font_item = font->font_items + wstr[index];
+                        font_item = XRDP_FONT_GET_CHAR(font, utf32[index]);
                         g_memset(&pat, 0, sizeof(pat));
                         pat.format = PT_FORMAT_c1;
                         pat.width = font_item->width;
@@ -912,12 +909,12 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
                         pat.height = font_item->height;
                         pat.data = font_item->data;
                         x1 = x + font_item->offset;
-                        y1 = y + (font_item->height + font_item->baseline);
+                        y1 = y + (font->body_height + font_item->baseline);
                         painter_fill_pattern(self->painter, &dst_pb, &pat,
                                              0, 0, x1, y1,
                                              font_item->width,
                                              font_item->height);
-                        xrdp_painter_add_dirty_rect(self, x, y,
+                        xrdp_painter_add_dirty_rect(self, x1, y1,
                                                     font_item->width,
                                                     font_item->height,
                                                     &draw_rect);
@@ -928,25 +925,22 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
             }
             painter_clear_clip(self->painter);
             xrdp_region_delete(region);
-            g_free(wstr);
         }
         return 0;
 #endif
     }
 
-    /* convert to wide char */
-    wstr = (twchar *)g_malloc((len + 2) * sizeof(twchar), 0);
-    g_mbstowcs(wstr, text, len + 1);
     font = self->font;
     f = 0;
     k = 0;
     total_width = 0;
     total_height = 0;
-    data = (char *)g_malloc(len * 4, 1);
+    index = 0;
+    data = (char *)g_malloc(utf32len * 2, 1);
 
-    for (index = 0; index < len; index++)
+    for (index = 0 ; index < utf32len; ++index)
     {
-        font_item = font->font_items + wstr[index];
+        font_item = XRDP_FONT_GET_CHAR(font, utf32[index]);
         i = xrdp_cache_add_char(self->wm->cache, font_item);
         f = HIWORD(i);
         c = LOWORD(i);
@@ -954,7 +948,11 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
         data[index * 2 + 1] = k;
         k = font_item->incby;
         total_width += k;
-        total_height = MAX(total_height, font_item->height);
+        /* Use the nominal height of the font to work out the
+         * actual height of this glyph */
+        int glyph_height =
+            font->body_height + font_item->baseline + font_item->height;
+        total_height = MAX(total_height, glyph_height);
     }
 
     xrdp_bitmap_get_screen_clip(dst, self, &clip_rect, &dx, &dy);
@@ -979,13 +977,13 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
         if (rect_intersect(&rect, &clip_rect, &draw_rect))
         {
             x1 = x;
-            y1 = y + total_height;
+            y1 = y + font->body_height;
             flags = 0x03; /* 0x03 0x73; TEXT2_IMPLICIT_X and something else */
             libxrdp_orders_text(self->session, f, flags, 0,
                                 self->fg_color, 0,
                                 x - 1, y - 1, x + total_width, y + total_height,
                                 0, 0, 0, 0,
-                                x1, y1, data, len * 2, &draw_rect);
+                                x1, y1, data, utf32len * 2, &draw_rect);
         }
 
         k++;
@@ -993,8 +991,42 @@ xrdp_painter_draw_text(struct xrdp_painter *self,
 
     xrdp_region_delete(region);
     g_free(data);
-    g_free(wstr);
     return 0;
+}
+
+
+/*****************************************************************************/
+int
+xrdp_painter_draw_text(struct xrdp_painter *self,
+                       struct xrdp_bitmap *dst,
+                       int x, int y, const char *text)
+{
+    int rv = 0;
+    unsigned int c32_count = utf8_char_count(text);
+
+    if (c32_count > 0)
+    {
+        char32_t *utf32 = (char32_t *)malloc(c32_count * sizeof(char32_t));
+        if (utf32 == NULL)
+        {
+            rv = 1;
+        }
+        else
+        {
+            unsigned int i = 0;
+            char32_t c32;
+
+            while ((c32 = utf8_get_next_char(&text, NULL)) != 0)
+            {
+                utf32[i++] = c32;
+            }
+
+            rv = xrdp_painter_draw_utf32(self, dst, x, y, utf32, c32_count);
+            free (utf32);
+        }
+    }
+
+    return rv;
 }
 
 /*****************************************************************************/
@@ -1086,6 +1118,40 @@ xrdp_painter_draw_text2(struct xrdp_painter *self,
 
     xrdp_region_delete(region);
     return 0;
+}
+
+/*****************************************************************************/
+int
+xrdp_painter_draw_char(struct xrdp_painter *self,
+                       struct xrdp_bitmap *dst,
+                       int x, int y, char32_t chr,
+                       unsigned int repeat_count)
+{
+    int rv = 0;
+
+    if (repeat_count > 0)
+    {
+        char32_t *utf32 =
+            (char32_t *)malloc(repeat_count * sizeof(char32_t));
+
+        if (utf32 == NULL)
+        {
+            rv = 1;
+        }
+        else
+        {
+            unsigned int i = 0;
+            for (i = 0; i < repeat_count; ++i)
+            {
+                utf32[i] = chr;
+            }
+
+            rv = xrdp_painter_draw_utf32(self, dst, x, y, utf32, repeat_count);
+            free (utf32);
+        }
+    }
+
+    return rv;
 }
 
 /*****************************************************************************/
