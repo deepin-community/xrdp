@@ -1,3 +1,19 @@
+xrdp (0.10.1-4.1deepin1) unstable; urgency=medium
+
+  * Merge Debian security update to fix CVE-2023-40184, CVE-2023-42822,
+    CVE-2024-39917, CVE-2025-68670  Upgrades xrdp from 0.9.21.1-1 to
+    0.10.1-4.1  CVE Fixes: - CVE-2023-40184: Improper handling of
+    session establishment errors (MEDIUM) - CVE-2023-42822: Out-of-
+    bounds read in xrdp_painter.c (MEDIUM) - CVE-2024-39917: Infinite
+    login attempts vulnerability (HIGH/CRITICAL) - CVE-2025-68670: Stack-
+    based buffer overflow (CRITICAL)  References: -
+    https://nvd.nist.gov/vuln/detail/CVE-2023-40184 -
+    https://nvd.nist.gov/vuln/detail/CVE-2023-42822 -
+    https://nvd.nist.gov/vuln/detail/CVE-2024-39917 -
+    https://nvd.nist.gov/vuln/detail/CVE-2025-68670
+
+ -- hudeng <hudeng@deepin.org>  Tue, 24 Feb 2026 15:05:44 +0800
+
 xrdp (0.10.1-4.1) unstable; urgency=medium
 
   * Non-maintainer upload.
