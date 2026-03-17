@@ -1,3 +1,14 @@
+xrdp (0.10.1-4.1deepin1) unstable; urgency=medium
+
+  * Add sw64 architecture support
+    - Add __sw_64__ to arch.h NEED_ALIGN condition
+    - Fixes compilation error on sw64 systems:
+      "#warning unknown arch [-Werror=cpp]"
+    - The sw64 (Sunway) architecture requires explicit handling for
+      memory alignment in certain data structures and operations
+
+ -- lichenggang <lichenggang@uniontech.com>  Tue, 17 Mar 2026 19:58:05 +0800
+
 xrdp (0.10.1-4.1) unstable; urgency=medium
 
   * Non-maintainer upload.
@@ -187,7 +198,7 @@ xrdp (0.9.12-1) unstable; urgency=low
   * Update Homepage link
   * New upstream version (Closes: #925890)
   * Bump Policy & debhelper; update build system
-  * Address lintian’s concerns, update lintian overrides
+  * Address lintian's concerns, update lintian overrides
   * d/p/document-certs.diff: Address #860890 with documentation
   * d/xrdp.init: redirect xrdp stdout into nirvana (Closes: #883358)
 
@@ -221,7 +232,7 @@ xrdp (0.9.8-1) unstable; urgency=medium
     + No changes required.
   * Refresh patches.
   * Update copyright.
-    + Remove xorg/* files as x11rdp was removed from sources.
+    + Remove xorg/* files as x11rdp was removed from the sources.
     + Remove sesman/chansrv/pulse/* as it was removed from the sources.
     + Add minor new instfiles.
 
@@ -372,7 +383,7 @@ xrdp (0.9.1-4) unstable; urgency=high
   [ Thorsten Glaser ]
   * Fix up PAM conffile handling for upgrades from jessie{,-backports}.
   * Fix build on non-linux architectures. (Closes: #831663)
-    + Don’t use FUSE on the Hurd, it does not support enough of it yet.
+    + Don't use FUSE on the Hurd, it does not support enough of it yet.
     + Add GNU/kFreeBSD support to NASM format detection autoconfigury.
   * Remove patch to make stack not executable in *.asm files; upstrem
     fixed this already.
@@ -608,7 +619,7 @@ xrdp (0.6.0-1) unstable; urgency=low
   * Bump Standards-Version to 3.9.3.
   * Enable hardening.
 
- -- Vincent Bernat <bernat@debian.org>  Sat, 29 Sep 2012 13:00:49 +0200
+ -- Vincent Bernat <bernat@debian.org>  Sat, 29 Sep 2012 13:00:49 +0100
 
 xrdp (0.5.0-2) unstable; urgency=low
 
@@ -628,7 +639,7 @@ xrdp (0.5.0-1) unstable; urgency=low
   * Support for some non-US keyboards whose keycodes may be greater than
     128 with a patch from Sasajima. Closes: #610961.
 
- -- Vincent Bernat <bernat@debian.org>  Sun, 18 Sep 2011 20:38:04 +0200
+ -- Vincent Bernat <bernat@debian.org>  Sun, 18 Sep 2011 20:38:04 +0100
 
 xrdp (0.5.0~20100303cvs-6) unstable; urgency=low
 
@@ -644,14 +655,14 @@ xrdp (0.5.0~20100303cvs-5) unstable; urgency=low
     compliant. Closes: #589757.
   * Bump Standards-Version to 3.9.0.
 
- -- Vincent Bernat <bernat@debian.org>  Sat, 24 Jul 2010 16:40:34 +0200
+ -- Vincent Bernat <bernat@debian.org>  Sat, 24 Jul 2010 16:40:34 +0100
 
 xrdp (0.5.0~20100303cvs-4) unstable; urgency=low
 
   * Add a patch to fall back to US keymap if the correct keymap is not
     found in /etc/xrdp. Closes: #575477.
 
- -- Vincent Bernat <bernat@debian.org>  Sat, 01 May 2010 20:09:05 +0200
+ -- Vincent Bernat <bernat@debian.org>  Sat, 01 May 2010 20:09:05 +0100
 
 xrdp (0.5.0~20100303cvs-3) unstable; urgency=low
 
@@ -778,7 +789,7 @@ xrdp (0.4.0~dfsg-2) unstable; urgency=low
   * Add a watch file
   * Now running the daemon as xrdp user
 
- -- Vincent Bernat <bernat@luffy.cx>  Sun, 29 Jul 2007 13:05:46 +0200
+ -- Vincent Bernat <bernat@luffy.cx>  Sun, 29 Jul 2007 13:05:46 +0100
 
 xrdp (0.4.0~dfsg-1) unstable; urgency=low
 

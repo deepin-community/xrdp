@@ -9,3 +9,4 @@ document-certs.diff
 #fix-environment.diff
 #cherry-pick-dvorak-pr-3112
 CVE-2025-68670-Buffer-overflow-parsing-domain.patch
+deepin-sw64-arch-support.diff
