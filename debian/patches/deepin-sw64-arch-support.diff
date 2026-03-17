@@ -1,0 +1,32 @@
+From: lichenggang <lichenggang@uniontech.com>
+Date: Tue, 17 Mar 2026 19:58:05 +0800
+Subject: Add sw64 architecture support
+
+The sw64 (Sunway) architecture requires explicit handling for data alignment
+in certain memory operations. Without this support, the software may experience
+alignment-related issues or crashes on sw64 systems.
+
+This patch adds __sw_64__ to the list of architectures that require the NEED_ALIGN
+definition, ensuring proper memory alignment behavior on Sunway sw64 platforms.
+
+Signed-off-by: lichenggang <lichenggang@uniontech.com>
+---
+ common/arch.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/common/arch.h b/common/arch.h
+index f2a4fad..b13f712 100644
+--- a/common/arch.h
++++ b/common/arch.h
+@@ -94,7 +94,8 @@ typedef uint32_t char32_t;
+     defined(__ia64__) || defined(__arm__) || defined(__sh__) || \
+     (defined(__PPC__) && defined(__BIG_ENDIAN__)) || \
+     (defined(__ppc__) && defined(__BIG_ENDIAN__)) || \
+-    defined(__loongarch__) || defined(__e2k__)
++    defined(__loongarch__) || defined(__e2k__) || \
++    defined(__sw_64__)
+ #define NEED_ALIGN
+ #elif defined(__x86__) || defined(__x86_64__) || \
+       defined(__AMD64__) || defined(_M_IX86) || defined (_M_AMD64) || \
+--
+2.43.0
