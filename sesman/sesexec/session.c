@@ -47,6 +47,7 @@
 #include "login_info.h"
 #include "os_calls.h"
 #include "sesexec.h"
+#include "sessionrecord.h"
 #include "string_calls.h"
 #include "xauth.h"
 #include "xwait.h"
@@ -250,8 +251,21 @@ start_window_manager(struct login_info *login_info,
         }
     }
 
-    if (s->shell[0] != '\0')
+    if (g_cfg->sec.allow_alternate_shell &&
+            g_cfg->sec.pass_shell_as_env != NULL &&
+            g_cfg->sec.pass_shell_as_env[0] != '0')
     {
+        // Pass the shell in to the standard startwm scripts
+        // in an environment variable
+        LOG(LOG_LEVEL_INFO,
+            "Setting variable '%s' to the specified shell of '%s'",
+            g_cfg->sec.pass_shell_as_env,
+            s->shell);
+        g_setenv_log(g_cfg->sec.pass_shell_as_env, s->shell, 1);
+    }
+    else if (s->shell[0] != '\0')
+    {
+        // Try to execute the shell directly (if permitted)
         if (g_cfg->sec.allow_alternate_shell)
         {
             if (g_strchr(s->shell, ' ') != 0 || g_strchr(s->shell, '\t') != 0)
@@ -356,19 +370,19 @@ prepare_xorg_xserver_params(const struct session_parameters *s,
 
         /* some args are passed via env vars */
         g_snprintf(text, sizeof(text), "%d", s->width);
-        g_setenv("XRDP_START_WIDTH", text, 1);
+        g_setenv_log("XRDP_START_WIDTH", text, 1);
 
         g_snprintf(text, sizeof(text), "%d", s->height);
-        g_setenv("XRDP_START_HEIGHT", text, 1);
+        g_setenv_log("XRDP_START_HEIGHT", text, 1);
 
         g_snprintf(text, sizeof(text), "%d", g_cfg->sess.max_idle_time);
-        g_setenv("XRDP_SESMAN_MAX_IDLE_TIME", text, 1);
+        g_setenv_log("XRDP_SESMAN_MAX_IDLE_TIME", text, 1);
 
         g_snprintf(text, sizeof(text), "%d", g_cfg->sess.max_disc_time);
-        g_setenv("XRDP_SESMAN_MAX_DISC_TIME", text, 1);
+        g_setenv_log("XRDP_SESMAN_MAX_DISC_TIME", text, 1);
 
         g_snprintf(text, sizeof(text), "%d", g_cfg->sess.kill_disconnected);
-        g_setenv("XRDP_SESMAN_KILL_DISCONNECTED", text, 1);
+        g_setenv_log("XRDP_SESMAN_KILL_DISCONNECTED", text, 1);
 
         /* get path of Xorg from config */
         xserver = (const char *)list_get_item(g_cfg->xorg_params, 0);
@@ -387,10 +401,21 @@ prepare_xorg_xserver_params(const struct session_parameters *s,
 }
 
 /******************************************************************************/
+/**
+ * Prepare a list of parameters for the Xvnc X server
+ * @param s Session parameters
+ * @params authfile XAUTHORITY file
+ * @params passwd_file VNC password file, or NULL
+ * @params port UDS port to connect to, or NULL
+ * @return parameters list
+ *
+ * One of passwd_file and port must be set
+ */
 static struct list *
 prepare_xvnc_xserver_params(const struct session_parameters *s,
                             const char *authfile,
-                            const char *passwd_file)
+                            const char *passwd_file,
+                            const char *port)
 {
     char screen[32] = {0}; /* display number */
     char geometry[32] = {0};
@@ -419,8 +444,34 @@ prepare_xvnc_xserver_params(const struct session_parameters *s,
                               "-auth", authfile,
                               "-geometry", geometry,
                               "-depth", depth,
-                              "-rfbauth", passwd_file,
                               NULL);
+
+        if (passwd_file != NULL)
+        {
+            /* RFB authorization */
+            list_add_strdup_multi(params,
+                                  "-rfbauth", passwd_file,
+                                  NULL);
+        }
+        else if (port != NULL)
+        {
+            /* UDS connection. Authorization is handled by standard socket
+             * permissions, so we do not need to authorize within the
+             * VNC protocol exchange as well */
+            char sock_mode[16];
+
+            /* Convert a standard permissions mask into decimal
+             * for the -rfbunixmode switch argument
+             */
+            g_snprintf(sock_mode, sizeof(sock_mode),
+                       "%d", 0660); /* rw-rw---- */
+
+            list_add_strdup_multi(params,
+                                  "-rfbunixpath", port,
+                                  "-rfbunixmode", sock_mode,
+                                  "-SecurityTypes", "None",
+                                  NULL);
+        }
 
         /* additional parameters from sesman.ini file */
         //config_read_xserver_params(SCP_SESSION_TYPE_XVNC,
@@ -481,21 +532,27 @@ start_x_server(struct login_info *login_info,
     {
         switch (s->type)
         {
+                char port[256];
+
             case SCP_SESSION_TYPE_XORG:
                 xserver_params = prepare_xorg_xserver_params(s, authfile);
                 break;
 
             case SCP_SESSION_TYPE_XVNC:
                 xserver_params = prepare_xvnc_xserver_params(s, authfile,
-                                 passwd_file);
+                                 passwd_file, NULL);
+                break;
+
+            case SCP_SESSION_TYPE_XVNC_UDS:
+                g_snprintf(port, sizeof(port), XRDP_X11RDP_STR,
+                           login_info->uid, s->display);
+                xserver_params = prepare_xvnc_xserver_params(s, authfile,
+                                 NULL, port);
                 break;
 
             default:
                 unknown_session_type = 1;
         }
-
-        g_free(passwd_file);
-        passwd_file = NULL;
 
         if (xserver_params == NULL)
         {
@@ -519,6 +576,7 @@ start_x_server(struct login_info *login_info,
     }
 
     /* should not get here */
+    g_free(passwd_file);
     list_delete(xserver_params);
     LOG(LOG_LEVEL_ERROR, "A fatal error has occurred attempting "
         "to start the X server on display %u, aborting connection",
@@ -566,6 +624,19 @@ session_start_wrapped(struct login_info *login_info,
     int window_manager_pid;
     enum scp_screate_status status = E_SCP_SCREATE_GENERAL_ERROR;
 
+    /* Set the secondary groups before starting the session to prevent
+     * problems on PAM-based systems (see Linux pam_setcred(3)).
+     * If we have *BSD setusercontext() this is not done here */
+#ifndef HAVE_SETUSERCONTEXT
+    if (g_initgroups(login_info->username) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR,
+            "Failed to initialise secondary groups for %s: %s",
+            login_info->username, g_get_strerror());
+        return E_SCP_SCREATE_GENERAL_ERROR;
+    }
+#endif
+
     if (auth_start_session(login_info->auth_info, s->display) != 0)
     {
         // Errors are logged by the auth module, as they are
@@ -589,19 +660,6 @@ session_start_wrapped(struct login_info *login_info,
         LOG(LOG_LEVEL_WARNING,
             "[session start] (display %d): setlogin failed for user %s - pid %d",
             s->display, login_info->username, g_getpid());
-    }
-#endif
-
-    /* Set the secondary groups before starting the session to prevent
-     * problems on PAM-based systems (see Linux pam_setcred(3)).
-     * If we have *BSD setusercontext() this is not done here */
-#ifndef HAVE_SETUSERCONTEXT
-    if (g_initgroups(login_info->username) != 0)
-    {
-        LOG(LOG_LEVEL_ERROR,
-            "Failed to initialise secondary groups for %s: %s",
-            login_info->username, g_get_strerror());
-        return E_SCP_SCREATE_GENERAL_ERROR;
     }
 #endif
 
@@ -656,6 +714,7 @@ session_start_wrapped(struct login_info *login_info,
             }
             else
             {
+                utmp_login(window_manager_pid, s->display, login_info);
                 LOG(LOG_LEVEL_INFO,
                     "Starting the xrdp channel server for display :%d",
                     s->display);
@@ -807,11 +866,11 @@ cleanup_sockets(int uid, int display)
 
 /******************************************************************************/
 static void
-exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
+exit_status_to_str(const struct proc_exit_status *e, char buff[], int bufflen)
 {
     switch (e->reason)
     {
-        case E_XR_STATUS_CODE:
+        case E_PXR_STATUS_CODE:
             if (e->val == 0)
             {
                 g_snprintf(buff, bufflen, "exit code zero");
@@ -822,7 +881,7 @@ exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
             }
             break;
 
-        case E_XR_SIGNAL:
+        case E_PXR_SIGNAL:
         {
             char sigstr[MAXSTRSIGLEN];
             g_snprintf(buff, bufflen, "signal %s",
@@ -840,7 +899,7 @@ exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
 void
 session_process_child_exit(struct session_data *sd,
                            int pid,
-                           const struct exit_status *e)
+                           const struct proc_exit_status *e)
 {
     if (pid == sd->x_server)
     {
@@ -860,7 +919,7 @@ session_process_child_exit(struct session_data *sd,
     {
         int wm_wait_time = g_time1() - sd->start_time;
 
-        if (e->reason == E_XR_STATUS_CODE && e->val == 0)
+        if (e->reason == E_PXR_STATUS_CODE && e->val == 0)
         {
             LOG(LOG_LEVEL_INFO,
                 "Window manager (pid %d, display %d) "
@@ -886,6 +945,7 @@ session_process_child_exit(struct session_data *sd,
                 sd->win_mgr, sd->params.display, wm_wait_time);
         }
 
+        utmp_logout(sd->win_mgr, sd->params.display, e);
         sd->win_mgr = -1;
 
         if (sd->x_server > 0)

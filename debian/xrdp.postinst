@@ -40,9 +40,9 @@ configure)
 
 	# Generate snakeoil RDP security keys
 	test -e /etc/xrdp/rsakeys.ini || (
-		umask 077
+		umask 027
 		xrdp-keygen xrdp auto
-		chown xrdp /etc/xrdp/rsakeys.ini
+		chown root:xrdp /etc/xrdp/rsakeys.ini
 	)
 
 	# Generate/link snakeoil X509 certificate and key
@@ -51,6 +51,13 @@ configure)
 		ln -s /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/xrdp/cert.pem
 		ln -s /etc/ssl/private/ssl-cert-snakeoil.key /etc/xrdp/key.pem
 	)
+
+	# Fix permissions and ownership for rsakeys.ini
+	if dpkg --compare-versions "$2" lt 0.10.5-5~; then
+		chown root:xrdp /etc/xrdp/rsakeys.ini
+		chmod 0640 /etc/xrdp/rsakeys.ini
+	fi
+
 	;;
 
 abort-upgrade|abort-remove|abort-deconfigure)

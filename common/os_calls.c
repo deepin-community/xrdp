@@ -118,6 +118,14 @@ struct sockaddr_hvs
 #define INADDR_NONE ((unsigned long)-1)
 #endif
 
+// MacOS uses a different type for getgrouplist() than getgroups(). This
+// appears to be the only platform which does this.
+#ifdef __APPLE__
+#    define GETGROUPLIST_T int
+#else
+#    define GETGROUPLIST_T GETGROUPS_T
+#endif
+
 /**
  * Type big enough to hold socket address information for any connecting type
  */
@@ -369,8 +377,6 @@ int
 g_tcp_socket(void)
 {
     int rv;
-    int option_value;
-    socklen_t option_len;
 
 #if defined(XRDP_ENABLE_IPV6)
     rv = (int)socket(AF_INET6, SOCK_STREAM, 0);
@@ -398,7 +404,8 @@ g_tcp_socket(void)
         return -1;
     }
 #if defined(XRDP_ENABLE_IPV6)
-    option_len = sizeof(option_value);
+    int option_value;
+    socklen_t option_len = sizeof(option_value);
     if (getsockopt(rv, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&option_value,
                    &option_len) == 0)
     {
@@ -418,22 +425,6 @@ g_tcp_socket(void)
         }
     }
 #endif
-    option_len = sizeof(option_value);
-    if (getsockopt(rv, SOL_SOCKET, SO_REUSEADDR, (char *)&option_value,
-                   &option_len) == 0)
-    {
-        if (option_value == 0)
-        {
-            option_value = 1;
-            option_len = sizeof(option_value);
-            if (setsockopt(rv, SOL_SOCKET, SO_REUSEADDR, (char *)&option_value,
-                           option_len) < 0)
-            {
-                LOG(LOG_LEVEL_ERROR, "g_tcp_socket: setsockopt() failed");
-            }
-        }
-    }
-
     return rv;
 }
 
@@ -509,6 +500,23 @@ g_sck_get_recv_buffer_bytes(int sck, int *bytes)
     }
     *bytes = option_value;
     return 0;
+}
+
+/*****************************************************************************/
+int
+g_sck_set_reuseaddr(int sck)
+{
+    int rv;
+    int option_value = 1;
+    socklen_t option_len = sizeof(option_value);
+
+    rv = setsockopt(sck, SOL_SOCKET, SO_REUSEADDR,
+                    (char *) &option_value, option_len);
+    if (rv < 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "g_sck_set_reuseaddr: %s", g_get_strerror());
+    }
+    return rv;
 }
 
 /*****************************************************************************/
@@ -1424,6 +1432,16 @@ g_sck_recv_fd_set(int sck, void *ptr, unsigned int len,
     if ((rv = recvmsg(sck, &msg, 0)) > 0)
     {
         struct cmsghdr *cmsg;
+
+        // Coverity: msg is 'tainted', so check msg.control and
+        // msg.msg_controllen are sane (i.e. recvmsg() hasn't done
+        // something odd)
+        msg.msg_control = control_un.control;
+        if (msg.msg_controllen > sizeof(control_un.control))
+        {
+            msg.msg_controllen = sizeof(control_un.control);
+        }
+
         if ((msg.msg_flags & MSG_CTRUNC) != 0)
         {
             LOG(LOG_LEVEL_WARNING, "Ancillary data on recvmsg() was truncated");
@@ -1770,7 +1788,7 @@ g_delete_wait_obj_from_socket(tintptr wait_obj)
 {
 #ifdef _WIN32
 
-    if (wait_obj == 0)
+    if (wait_obj == NULL_WAIT_OBJ)
     {
         return;
     }
@@ -1794,7 +1812,7 @@ g_set_wait_obj(tintptr obj)
     int to_write;
     char buf[4] = "sig";
 
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -1805,7 +1823,7 @@ g_set_wait_obj(tintptr obj)
         return 0;
     }
     fd = obj >> 16;
-    to_write = 4;
+    to_write = sizeof(buf);
     written = 0;
     while (written < to_write)
     {
@@ -1823,12 +1841,13 @@ g_set_wait_obj(tintptr obj)
                 return 1;
             }
         }
-        else if (error > 0)
+        else if (error > 0 && error <= (int)sizeof(buf))
         {
             written += error;
         }
         else
         {
+            // Shouldn't get here.
             return 1;
         }
     }
@@ -1842,7 +1861,7 @@ int
 g_reset_wait_obj(tintptr obj)
 {
 #ifdef _WIN32
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -1853,7 +1872,7 @@ g_reset_wait_obj(tintptr obj)
     int error;
     int fd;
 
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -1889,7 +1908,7 @@ int
 g_is_wait_obj_set(tintptr obj)
 {
 #ifdef _WIN32
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -1899,7 +1918,7 @@ g_is_wait_obj_set(tintptr obj)
     }
     return 0;
 #else
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -1913,7 +1932,7 @@ int
 g_delete_wait_obj(tintptr obj)
 {
 #ifdef _WIN32
-    if (obj == 0)
+    if (obj == NULL_WAIT_OBJ)
     {
         return 0;
     }
@@ -2240,6 +2259,30 @@ g_file_seek(int fd, int offset)
 }
 
 /*****************************************************************************/
+/* move file pointer to end of file, plus an offset */
+int
+g_file_seek_end(int fd, int offset)
+{
+#if defined(_WIN32)
+    int rv;
+
+    rv = (int)SetFilePointer((HANDLE)fd, offset, 0, FILE_END);
+
+    if (rv == (int)INVALID_SET_FILE_POINTER)
+    {
+        return -1;
+    }
+    else
+    {
+        return rv;
+    }
+
+#else
+    return (int)lseek(fd, offset, SEEK_END);
+#endif
+}
+
+/*****************************************************************************/
 /* do a write lock on a file */
 /* return boolean */
 int
@@ -2311,15 +2354,27 @@ g_file_set_cloexec(int fd, int status)
 struct list *
 g_get_open_fds(int min, int max)
 {
+    if (min < 0)
+    {
+        min = 0;
+    }
+
     struct list *result = list_create();
 
     if (result != NULL)
     {
         if (max < 0)
         {
-            max = sysconf(_SC_OPEN_MAX);
+            // sysconf() returns a long. Limit it to a sane value
+#define SANE_MAX 100000
+            long sc_max = sysconf(_SC_OPEN_MAX);
+            max = (sc_max < 0) ? 0 :
+                  (sc_max > (long)SANE_MAX) ? SANE_MAX :
+                  sc_max;
+#undef SANE_MAX
         }
 
+        // max and min are now both guaranteed to be >= 0
         if (max > min)
         {
             struct pollfd *fds = g_new0(struct pollfd, max - min);
@@ -2344,6 +2399,7 @@ g_get_open_fds(int min, int max)
                         // Descriptor is open
                         if (!list_add_item(result, i))
                         {
+                            g_free(fds);
                             goto nomem;
                         }
                     }
@@ -3168,6 +3224,48 @@ g_setgid(int pid)
 }
 
 /*****************************************************************************/
+/* Used by daemonizing code */
+/* returns error, zero is success, non zero is error */
+int
+g_drop_privileges(const char *user, const char *group)
+{
+    int rv = 1;
+    int uid;
+    int gid;
+    if (g_getuser_info_by_name(user, &uid, NULL, NULL, NULL, NULL) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Unable to get UID for user '%s' [%s]", user,
+            g_get_strerror());
+    }
+    else if (g_getgroup_info(group, &gid) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Unable to get GID for group '%s' [%s]", group,
+            g_get_strerror());
+    }
+    else if (initgroups(user, gid) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Unable to init groups for '%s' [%s]", user,
+            g_get_strerror());
+    }
+    else if (g_setgid(gid) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Unable to set group to '%s' [%s]", group,
+            g_get_strerror());
+    }
+    else if (g_setuid(uid) != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "Unable to set user to '%s' [%s]", user,
+            g_get_strerror());
+    }
+    else
+    {
+        rv = 0;
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
 /* returns error, zero is success, non zero is error */
 /* does not work in win32 */
 int
@@ -3286,10 +3384,10 @@ g_set_allusercontext(int uid)
 /*****************************************************************************/
 /* does not work in win32
    returns pid of process that exits or zero if signal occurred
-   an exit_status struct can optionally be passed in to get the
+   a proc_exit_status struct can optionally be passed in to get the
    exit status of the child */
 int
-g_waitchild(struct exit_status *e)
+g_waitchild(struct proc_exit_status *e)
 {
 #if defined(_WIN32)
     return 0;
@@ -3297,14 +3395,14 @@ g_waitchild(struct exit_status *e)
     int wstat;
     int rv;
 
-    struct exit_status dummy;
+    struct proc_exit_status dummy;
 
     if (e == NULL)
     {
         e = &dummy;  // Set this, then throw it away
     }
 
-    e->reason = E_XR_UNEXPECTED;
+    e->reason = E_PXR_UNEXPECTED;
     e->val = 0;
 
     rv = waitpid(-1, &wstat, WNOHANG);
@@ -3319,12 +3417,12 @@ g_waitchild(struct exit_status *e)
     }
     else if (WIFEXITED(wstat))
     {
-        e->reason = E_XR_STATUS_CODE;
+        e->reason = E_PXR_STATUS_CODE;
         e->val = WEXITSTATUS(wstat);
     }
     else if (WIFSIGNALED(wstat))
     {
-        e->reason = E_XR_SIGNAL;
+        e->reason = E_PXR_SIGNAL;
         e->val = WTERMSIG(wstat);
     }
 
@@ -3365,10 +3463,14 @@ g_waitpid(int pid)
 
    Note that signal handlers are established with BSD-style semantics,
    so this call is NOT interrupted by a signal  */
-struct exit_status
+struct proc_exit_status
 g_waitpid_status(int pid)
 {
-    struct exit_status exit_status = {.reason = E_XR_UNEXPECTED, .val = 0};
+    struct proc_exit_status exit_status =
+    {
+        .reason = E_PXR_UNEXPECTED,
+        .val = 0
+    };
 
 #if !defined(_WIN32)
     if (pid > 0)
@@ -3383,12 +3485,12 @@ g_waitpid_status(int pid)
         {
             if (WIFEXITED(status))
             {
-                exit_status.reason = E_XR_STATUS_CODE;
+                exit_status.reason = E_PXR_STATUS_CODE;
                 exit_status.val = WEXITSTATUS(status);
             }
             if (WIFSIGNALED(status))
             {
-                exit_status.reason = E_XR_SIGNAL;
+                exit_status.reason = E_PXR_SIGNAL;
                 exit_status.val = WTERMSIG(status);
             }
         }
@@ -3449,6 +3551,23 @@ g_setenv(const char *name, const char *value, int rewrite)
 #endif
 }
 
+
+/*****************************************************************************/
+/* does not work in win32 */
+void
+g_setenv_log(const char *name, const char *value, int rewrite)
+{
+#if defined(_WIN32)
+    return 0;
+#else
+    if (setenv(name, value, rewrite) != 0)
+    {
+        LOG(LOG_LEVEL_WARNING, "Unable to set environment variable '%s' [%s]",
+            name, g_get_strerror());
+    }
+#endif
+}
+
 /*****************************************************************************/
 /* does not work in win32 */
 char *
@@ -3490,6 +3609,12 @@ g_sigterm(int pid)
 #else
     return kill(pid, SIGTERM);
 #endif
+}
+
+/*****************************************************************************/
+int g_pid_is_active(int pid)
+{
+    return (kill(pid, 0) == 0);
 }
 
 /*****************************************************************************/
@@ -3648,13 +3773,13 @@ g_check_user_in_group(const char *username, int gid, int *ok)
         // Some implementations of getgrouplist() (i.e. muslc) don't
         // allow ngroups to be <1 on entry
         int ngroups = 1;
-        GETGROUPS_T dummy;
+        GETGROUPLIST_T dummy;
         getgrouplist(username, pwd_1->pw_gid, &dummy, &ngroups);
 
         if (ngroups > 0) // Should always be true
         {
-            GETGROUPS_T *grouplist;
-            grouplist = (GETGROUPS_T *)malloc(ngroups * sizeof(grouplist[0]));
+            GETGROUPLIST_T *grouplist;
+            grouplist = (GETGROUPLIST_T *)malloc(ngroups * sizeof(grouplist[0]));
             if (grouplist != NULL)
             {
                 // Now get the actual groups. The number of groups returned
@@ -3670,7 +3795,7 @@ g_check_user_in_group(const char *username, int gid, int *ok)
                 int i;
                 for (i = 0 ; i < ngroups; ++i)
                 {
-                    if (grouplist[i] == (GETGROUPS_T)gid)
+                    if (grouplist[i] == (GETGROUPLIST_T)gid)
                     {
                         *ok = 1;
                         break;
@@ -4024,30 +4149,7 @@ g_tcp4_socket(void)
 #if defined(XRDP_ENABLE_IPV6ONLY)
     return -1;
 #else
-    int rv;
-    int option_value;
-    socklen_t option_len;
-
-    rv = socket(AF_INET, SOCK_STREAM, 0);
-    if (rv < 0)
-    {
-        return -1;
-    }
-    option_len = sizeof(option_value);
-    if (getsockopt(rv, SOL_SOCKET, SO_REUSEADDR,
-                   (char *) &option_value, &option_len) == 0)
-    {
-        if (option_value == 0)
-        {
-            option_value = 1;
-            option_len = sizeof(option_value);
-            if (setsockopt(rv, SOL_SOCKET, SO_REUSEADDR,
-                           (char *) &option_value, option_len) < 0)
-            {
-            }
-        }
-    }
-    return rv;
+    return socket(AF_INET, SOCK_STREAM, 0);
 #endif
 }
 
@@ -4105,20 +4207,6 @@ g_tcp6_socket(void)
 #endif
             option_len = sizeof(option_value);
             if (setsockopt(rv, IPPROTO_IPV6, IPV6_V6ONLY,
-                           (char *) &option_value, option_len) < 0)
-            {
-            }
-        }
-    }
-    option_len = sizeof(option_value);
-    if (getsockopt(rv, SOL_SOCKET, SO_REUSEADDR,
-                   (char *) &option_value, &option_len) == 0)
-    {
-        if (option_value == 0)
-        {
-            option_value = 1;
-            option_len = sizeof(option_value);
-            if (setsockopt(rv, SOL_SOCKET, SO_REUSEADDR,
                            (char *) &option_value, option_len) < 0)
             {
             }
@@ -4182,6 +4270,30 @@ g_no_new_privs(void)
 #else
     return 0;
 #endif
+}
+
+
+/*****************************************************************************/
+int
+g_fips_mode_enabled(void)
+{
+    int rv = 0;
+#if defined (__linux)
+    char buff[16];
+    int fd = open("/proc/sys/crypto/fips_enabled", O_RDONLY);
+
+    if (fd >= 0)
+    {
+        ssize_t res = read(fd, buff, sizeof(buff));
+        if (res > 0 && (size_t)res < sizeof(buff))
+        {
+            rv = (buff[0] != '0');
+        }
+
+        close(fd);
+    }
+#endif
+    return rv;
 }
 
 /*****************************************************************************/

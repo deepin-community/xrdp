@@ -2,7 +2,7 @@ EXTRA_DIST = \
   Doxyfile
 
 AM_CPPFLAGS = \
-  -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
+  -DXRDP_CFG_PATH=\"${sysconfdir}/${sysconfsubdir}\" \
   -DXRDP_SBIN_PATH=\"${sbindir}\" \
   -DXRDP_LIBEXEC_PATH=\"${libexecdir}/xrdp\" \
   -DXRDP_PID_PATH=\"${localstatedir}/run\" \
@@ -27,6 +27,7 @@ xrdp_sesman_SOURCES = \
   scp_process.h \
   sesman.c \
   sesman.h \
+  sesman.ini.in \
   sesexec_control.c \
   sesexec_control.h \
   session_list.c \
@@ -39,7 +40,7 @@ xrdp_sesman_LDADD = \
   $(top_builddir)/libipm/libipm.la \
   $(top_builddir)/common/libcommon.la
 
-sesmansysconfdir=$(sysconfdir)/xrdp
+sesmansysconfdir=$(sysconfdir)/$(sysconfsubdir)
 
 SUBST_VARS = sed \
    -e 's|@sesmansysconfdir[@]|$(sesmansysconfdir)|g'
@@ -52,7 +53,7 @@ SUFFIXES = .in
 .in:
 	$(subst_verbose)$(SUBST_VARS) $< > $@
 
-dist_sesmansysconf_DATA = \
+nodist_sesmansysconf_DATA = \
   sesman.ini
 
 dist_sesmansysconf_SCRIPTS = \
@@ -64,3 +65,5 @@ SUBDIRS = \
   sesexec \
   tools \
   chansrv
+
+CLEANFILES = $(nodist_sesmansysconf_DATA)

@@ -86,6 +86,11 @@
 #define MCS_SDRQ                       25 /* Send Data Request */
 #define MCS_SDIN                       26 /* Send Data Indication */
 
+/* xorgxrdp: frame capture interval (milliseconds) */
+#define DEFAULT_RFX_FRAME_INTERVAL     32
+#define DEFAULT_H264_FRAME_INTERVAL    16
+#define DEFAULT_NORMAL_FRAME_INTERVAL  40
+
 /******************************************************************************
  *
  * Constants come from other Microsoft products

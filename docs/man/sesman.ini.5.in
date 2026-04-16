@@ -98,7 +98,33 @@ stdout. Use for debugging only\fR
 
 It is ignored in the [ChansrvLogging] section
 since the channel server creates one log file per display and instead uses the
-following log file naming convention \fIxrdp-chansrv.${DISPLAY}.log\fR
+following log file naming convention \fIxrdp-chansrv.${DISPLAY}.log\fR. For
+details of the chansrv log file location, see \fBLogFilePath\fR.
+
+.TP
+\fBLogFilePath\fR=\fIstring\fR
+Directory for storing the chansrv log file. This setting only applies to
+chansrv. The sesman log file is always created in \fI@localstatedir@/log\fR.
+
+Created if it doesn't exist.
+If first character is not a '/', this is relative to $HOME, where
+chansrv is normally started.
+
+.RS
+The following substitutions are made in this string:-
+    %U - Username
+    %u - Numeric UID
+    %% - Percent character
+
+This is most useful if you are using NFS-mounted home directories, and
+wish to move the chansrv log file to the local disk.
+
+If this parameter isn't specified, the log file is stored in one of
+the following locations :-
+    -   $CHANSRV_LOG_PATH
+    -   $XDG_DATA_HOME/xrdp
+    -   $HOME/.local/share/xrdp
+.RE
 
 .TP
 \fBLogLevel\fR=\fIlevel\fR
@@ -304,6 +330,16 @@ if the group specified in \fBTerminalServerUsers\fR doesn't exist.
 If set to \fB0\fR, \fBfalse\fR or \fBno\fR, prevent usage of alternate shells by users.
 
 .TP
+\fBPassShellAsEnv\fR=\fI<name-of-environment-variable>\fR
+If this is set, alternate shells are not actioned directly, but
+passed in to the default window manager in the specified environment
+variable. This allows the system manager more control over exactly
+what alternate shells are permitted.
+
+This will override any setting of the same environment variable
+in the \fB[SessionVariables]\fR section.
+
+.TP
 \fBXorgNoNewPrivileges\fR=\fI[true|false]\fR
 Only applicable on Linux. If set to \fB0\fR, \fBfalse\fR or \fBno\fR, do
 not use the kernel's \fIno_new_privs\fR restriction when invoking the Xorg
@@ -315,7 +351,8 @@ transitions between confinement domains.
 .TP
 \fBSessionSockdirGroup\fR=\fIgroup\fR
 Sets the group owner of the directories containing session sockets. This
-is normally the GID of the xrdp process so xrdp can connect to user sessions.
+MUST be the same as runtime_group in xrdp.ini, or xrdp will not
+be able to connect to any sessions.
 
 .SH "X11 SERVER"
 Following parameters can be used in the \fB[Xvnc]\fR and
@@ -354,6 +391,21 @@ drive. To fix this, consult the docs for your chosen desktop.
 .RE
 
 .TP
+\fBFuseMountNameColonCharReplacement\fR=\fIstring\fR
+Character to replace colon in redirected drive mount point names.
+If not specified no colon will not be replaced.
+If empty then colon will be replaced by null character.
+If longer than one character, only first character used.
+Only last colon replaced.
+.RE
+
+.TP
+\fBFuseDirectIO\fR=\fI[false|true]\fR
+Defaults to \fIfalse\fR. Set to \fItrue\fR to disable page caching in
+FUSE when opening files on a redirected drive. Direct I/O can impact
+the performance of file operations.
+
+.TP
 \fBFileUmask\fR=\fImode\fR
 Additional umask to apply to files in the \fBFuseMountName\fR directory.
 The default value of 077 prevents other users on the system from reading
@@ -385,6 +437,22 @@ This setting will be removed in a later version of xrdp, when GNOME 3 is
 no longer supported.
 
 .TP
+\fBFuseRootReportMaxFree\fR=\fI[false|true]\fR
+The existing FUSE implementation reports free space on remote drives
+in a way which can confuse some file managers if they check for free
+space at the FUSE mountpoint before copying files. KDE Dolphin is
+affected by this, and will report 'no space available' when trying to
+copy to remote drives.
+
+Setting this option will cause the FUSE fileystem to report a
+very large amount of free space for the root of the FUSE mountpoint.
+This will allow Dolphin to copy files to remote drives, but introduces
+a risk that the remote filesystem will run out of space during the copy.
+
+This setting will be removed in a later version of xrdp, when remote drives
+receive unique mountpoints.
+
+.TP
 \fBSoundNumSilentFramesAAC\fR=\fInumber\fR
 Sets the \fInumber\fR of silent frames which are sent to client before close
 message is sent, when AAC is selected. If set to 0, no silent frame is sent.
@@ -407,7 +475,7 @@ All entries in the \fB[SessionVariables]\fR section are set as
 environment variables in the user's session.
 
 .SH "FILES"
-@sysconfdir@/xrdp/sesman.ini
+@sysconfdir@/@sysconfsubdir@/sesman.ini
 
 .SH "SEE ALSO"
 .BR xrdp-sesman (8),

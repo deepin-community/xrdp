@@ -403,17 +403,21 @@ resize_server_to_client_layout(struct vnc *v)
 {
     int error = 0;
 
-    if (v->resize_supported != VRSS_SUPPORTED)
-    {
-        LOG(LOG_LEVEL_ERROR, "%s: Asked to resize server, but not possible",
-            __func__);
-        error = 1;
-    }
-    else if (vnc_screen_layouts_equal(&v->server_layout, &v->client_layout))
+    /* Before checking the 'resize_supported' flag, see if this
+     * is a null operation. We can get here if the server doesn't
+     * support resize, and we've queued a request to resize the client
+     * to the server size */
+    if (vnc_screen_layouts_equal(&v->server_layout, &v->client_layout))
     {
         LOG(LOG_LEVEL_DEBUG, "Server layout is the same "
             "as the client layout");
         v->resize_status = VRS_DONE;
+    }
+    else if (v->resize_supported != VRSS_SUPPORTED)
+    {
+        LOG(LOG_LEVEL_ERROR, "%s: Asked to resize server, but not possible",
+            __func__);
+        error = 1;
     }
     else
     {
@@ -1201,10 +1205,6 @@ lib_framebuffer_waiting_for_resize_confirm(struct vnc *v)
                 LOG(LOG_LEVEL_DEBUG, "VNC server successfully resized");
                 log_screen_layout(LOG_LEVEL_INFO, "NewLayout", &layout);
                 v->server_layout = layout;
-                // If this resize was requested by the client mid-session
-                // (dynamic resize), we need to tell xrdp_mm that
-                // it's OK to continue with the resize state machine.
-                error = v->server_monitor_resize_done(v);
             }
             else
             {
@@ -1212,9 +1212,22 @@ lib_framebuffer_waiting_for_resize_confirm(struct vnc *v)
                     "VNC server resize failed - error code %d [%s]",
                     response_code,
                     rfb_get_eds_status_msg(response_code));
-                /* Force client to same size as server */
+                // This is awkward. The client has asked for a specific size
+                // which we can't support.
+                //
+                // Currently we handle this by queueing a resize to our
+                // supported size, and continuing with the resize state
+                // machine in xrdp_mm.c
                 LOG(LOG_LEVEL_WARNING, "Resizing client to server");
                 error = resize_client_to_server(v, 0);
+            }
+
+            if (error == 0)
+            {
+                // If this resize was requested by the client mid-session
+                // (dynamic resize), we need to tell xrdp_mm that
+                // it's OK to continue with the resize state machine.
+                error = v->server_monitor_resize_done(v);
             }
             v->resize_status = VRS_DONE;
         }
@@ -1603,6 +1616,9 @@ lib_mod_connect(struct vnc *v)
     int error;
     int i;
     int check_sec_result;
+    int socket_mode;
+
+    g_snprintf(con_port, sizeof(con_port), "%s", v->port);
 
     v->server_msg(v, "VNC started connecting", 0);
     check_sec_result = 1;
@@ -1622,17 +1638,26 @@ lib_mod_connect(struct vnc *v)
             return 1;
     }
 
-    if (g_strcmp(v->ip, "") == 0)
+    /* Assume a TCP-port based connection (i.e. not a UDS connection)
+     * if the port is not an absolute path */
+    if (con_port[0] == '/')
     {
-        v->server_msg(v, "VNC error - no ip set", 0);
-        return 1;
+        socket_mode = TRANS_MODE_UNIX;
+    }
+    else
+    {
+        socket_mode = TRANS_MODE_TCP;
+        if (g_strcmp(v->ip, "") == 0)
+        {
+            v->server_msg(v, "VNC error - no IP set for TCP connection", 0);
+            return 1;
+        }
     }
 
     make_stream(s);
-    g_sprintf(con_port, "%s", v->port);
     make_stream(pixel_format);
 
-    v->trans = trans_create(TRANS_MODE_TCP, 8 * 8192, 8192);
+    v->trans = trans_create(socket_mode, 8 * 8192, 8192);
     if (v->trans == 0)
     {
         v->server_msg(v, "VNC error: trans_create() failed", 0);
@@ -1649,7 +1674,14 @@ lib_mod_connect(struct vnc *v)
         g_sleep(v->delay_ms);
     }
 
-    g_sprintf(text, "VNC connecting to %s %s", v->ip, con_port);
+    if (socket_mode == TRANS_MODE_TCP)
+    {
+        g_sprintf(text, "VNC connecting to TCP %s %s", v->ip, con_port);
+    }
+    else
+    {
+        g_sprintf(text, "VNC connecting to local socket %s", con_port);
+    }
     v->server_msg(v, text, 0);
 
     v->trans->si = v->si;
@@ -1657,71 +1689,78 @@ lib_mod_connect(struct vnc *v)
 
     error = trans_connect(v->trans, v->ip, con_port, 3000);
 
+    if (error != 0)
+    {
+        g_snprintf(text, sizeof(text), "Error connecting to VNC server [%s]",
+                   g_get_strerror());
+        v->server_msg(v, text, 0);
+        free_stream(s);
+        free_stream(pixel_format);
+        return 1;
+    }
+
+    v->server_msg(v, "VNC tcp connected", 0);
+    /* protocol version */
+    init_stream(s, 8192);
+    error = trans_force_read_s(v->trans, s, 12);
     if (error == 0)
     {
-        v->server_msg(v, "VNC tcp connected", 0);
-        /* protocol version */
-        init_stream(s, 8192);
-        error = trans_force_read_s(v->trans, s, 12);
-        if (error == 0)
-        {
-            s->p = s->data;
-            out_uint8a(s, "RFB 003.003\n", 12);
-            s_mark_end(s);
-            error = trans_force_write_s(v->trans, s);
-        }
+        s->p = s->data;
+        out_uint8a(s, "RFB 003.003\n", 12);
+        s_mark_end(s);
+        error = trans_force_write_s(v->trans, s);
+    }
 
-        /* sec type */
-        if (error == 0)
+    /* sec type */
+    if (error == 0)
+    {
+        init_stream(s, 8192);
+        error = trans_force_read_s(v->trans, s, 4);
+    }
+
+    if (error == 0)
+    {
+        in_uint32_be(s, i);
+        g_sprintf(text, "VNC security level is %d (1 = none, 2 = standard)", i);
+        v->server_msg(v, text, 0);
+
+        if (i == 1) /* none */
+        {
+            check_sec_result = 0;
+        }
+        else if (i == 2) /* dec the password and the server random */
         {
             init_stream(s, 8192);
-            error = trans_force_read_s(v->trans, s, 4);
-        }
+            error = trans_force_read_s(v->trans, s, 16);
 
-        if (error == 0)
-        {
-            in_uint32_be(s, i);
-            g_sprintf(text, "VNC security level is %d (1 = none, 2 = standard)", i);
-            v->server_msg(v, text, 0);
-
-            if (i == 1) /* none */
-            {
-                check_sec_result = 0;
-            }
-            else if (i == 2) /* dec the password and the server random */
+            if (error == 0)
             {
                 init_stream(s, 8192);
-                error = trans_force_read_s(v->trans, s, 16);
-
-                if (error == 0)
+                if (guid_is_set(&v->guid))
                 {
-                    init_stream(s, 8192);
-                    if (guid_is_set(&v->guid))
-                    {
-                        char guid_str[GUID_STR_SIZE];
-                        guid_to_str(&v->guid, guid_str);
-                        rfbHashEncryptBytes(s->data, guid_str);
-                    }
-                    else
-                    {
-                        rfbEncryptBytes(s->data, v->password);
-                    }
-                    s->p += 16;
-                    s_mark_end(s);
-                    error = trans_force_write_s(v->trans, s);
-                    check_sec_result = 1; // not needed
+                    char guid_str[GUID_STR_SIZE];
+                    guid_to_str(&v->guid, guid_str);
+                    rfbHashEncryptBytes(s->data, guid_str);
                 }
+                else
+                {
+                    rfbEncryptBytes(s->data, v->password);
+                }
+                s->p += 16;
+                s_mark_end(s);
+                error = trans_force_write_s(v->trans, s);
+                check_sec_result = 1; // not needed
             }
-            else if (i == 0)
-            {
-                LOG(LOG_LEVEL_ERROR, "VNC Server will disconnect");
-                error = 1;
-            }
-            else
-            {
-                LOG(LOG_LEVEL_ERROR, "VNC unsupported security level %d", i);
-                error = 1;
-            }
+        }
+        else if (i == 0)
+        {
+            LOG(LOG_LEVEL_ERROR, "VNC Server will disconnect");
+            error = 1;
+        }
+        else
+        {
+            LOG(LOG_LEVEL_ERROR, "VNC unsupported security level %d", i);
+            error = 1;
         }
     }
 
@@ -2085,7 +2124,7 @@ lib_mod_set_param(struct vnc *v, const char *name, const char *value)
     }
     else if (g_strcasecmp(name, "disabled_encodings_mask") == 0)
     {
-        v->enabled_encodings_mask = ~g_atoi(value);
+        v->enabled_encodings_mask = (unsigned int)~g_atoi(value);
     }
     else if (g_strcasecmp(name, "client_info") == 0)
     {

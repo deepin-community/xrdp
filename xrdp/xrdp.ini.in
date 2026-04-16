@@ -22,10 +22,15 @@ fork=true
 ;   port=vsock://<cid>:<port>
 port=3389
 
-; 'port' above should be connected to with vsock instead of tcp
-; use this only with number alone in port above
-; prefer use vsock://<cid>:<port> above
-use_vsock=false
+; if used inside a Hyper-V VM through vmconnect and bound on vsock,
+; turn this on to enable wider security protocol support.
+#vmconnect=true
+
+; Unprivileged User name and group to run the xrdp daemon.
+; It is HIGHLY RECOMMENDED you set these values. See the xrdp.ini(5)
+; manpage for more information on setting and checking these.
+#runtime_user=xrdp
+#runtime_group=xrdp
 
 ; regulate if the listening socket use socket option tcp_nodelay
 ; no buffering will be performed in the TCP stack
@@ -55,6 +60,9 @@ crypt_level=high
 ; openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 365
 certificate=
 key_file=
+
+; [Debug] Log file for TLS pre-master secrets - see xrdp.ini(5)
+#tls_pms_log_file=/tmp/xrdp-pms/premaster.log
 
 ; set SSL protocols
 ; can be comma separated list of 'SSLv3', 'TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3'
@@ -237,35 +245,53 @@ xrdpvr=true
 ; in sesman.ini. See and configure also sesman.ini.
 [Xorg]
 name=Xorg
-lib=libxup.so
+lib=libxup.@lib_extension@
 username=ask
 password=ask
 port=-1
 code=20
+; Frame capture interval (milliseconds)
+h264_frame_interval=16
+rfx_frame_interval=32
+normal_frame_interval=40
 
 [Xvnc]
 name=Xvnc
-lib=libvnc.so
+lib=libvnc.@lib_extension@
 username=ask
 password=ask
 ip=127.0.0.1
+; port is -1 (sesman controlled), numeric (TCP connection) or an
+; absolute path (UDS connection).
 port=-1
+; For sesman-controlled Xvnc, the 'code' parameter can be used to switch
+; the connection protocol:-
+; 0 - Use a TCP connection
+; 1 - Use a Unix Domain Sockets (UDS) connection
+;     UDS connections are not supported by older VNC servers, but are
+;     supported by TigerVNC. If you select this option, comment out
+;     (or remove) the 'ip=' setting.
+;
+; UDS connections are recommended, if your X server supports them. They are
+; more secure, and untroubled by firewalls.
+;
+; On FIPS-based systems, TCP CANNOT be used, as the classic algorithm used for
+; VNC password files is no longer considered secure by FIPS
+;
+; The default value is 0 on non-FIPS systems, and 1 on FIPS-based systems.
+#code=0
 #xserverbpp=24
 #delay_ms=2000
 ; Disable requested encodings to support buggy VNC servers
 ; (1 = ExtendedDesktopSize)
 #disabled_encodings_mask=0
-; Use this to connect to a chansrv instance created outside of sesman
-; (e.g. as part of an x11vnc console session). Replace '0' with the
-; display number of the session
-#chansrvport=DISPLAY(0)
 
 ; Generic VNC Proxy
 ; Tailor this to specific hosts and VNC instances by specifying an ip
 ; and port and setting a suitable name.
 [vnc-any]
 name=vnc-any
-lib=libvnc.so
+lib=libvnc.@lib_extension@
 ip=ask
 port=ask5900
 username=na
@@ -273,6 +299,15 @@ password=ask
 #pamusername=asksame
 #pampassword=asksame
 #delay_ms=2000
+; Use one of these to connect to a chansrv instance created outside of sesman
+; (e.g. as part of an x11vnc console session). Replace 'n' with the
+; display number of the session, and (if applicable) 'u' with the numeric
+; UID of the session.
+;
+; If 'username' or 'pamusername' is set, you probably don't need to use
+; the two parameter variant with 'u'.
+#chansrvport=DISPLAY(n)
+#chansrvport=DISPLAY(n,u)
 
 ; Generic RDP proxy using NeutrinoRDP
 ; Tailor this to specific hosts by specifying an ip and port and setting
@@ -281,7 +316,7 @@ password=ask
 name=neutrinordp-any
 ; To use this section, you should build xrdp with configure option
 ; --enable-neutrinordp.
-lib=libxrdpneutrinordp.so
+lib=libxrdpneutrinordp.@lib_extension@
 ip=ask
 port=ask3389
 username=ask

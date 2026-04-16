@@ -6,9 +6,9 @@
 EnableUserWindowManager=true
 ; Give in relative path to user's home directory
 UserWindowManager=startwm.sh
-; Give in full path or relative path to /etc/xrdp
+; Give in full path or relative path to @sesmansysconfdir@
 DefaultWindowManager=startwm.sh
-; Give in full path or relative path to /etc/xrdp
+; Give in full path or relative path to @sesmansysconfdir@
 ReconnectScript=reconnectwm.sh
 
 [Security]
@@ -39,16 +39,25 @@ RestrictOutboundClipboard=none
 RestrictInboundClipboard=none
 ; Set to 'no' to prevent users from logging in with alternate shells
 #AllowAlternateShell=true
+; Normally, alternate shells (if permitted) are executed directly, as
+; specified.
+; If this is set, alternate shells are not actioned directly, but
+; passed in to the default window manager in the specified environment
+; variable. This allows the system manager more control over exactly
+; what alternate shells are permitted.
+; This will override any setting of the same environment variable
+; in the [SessionVariables] section.
+#PassShellAsEnv=XRDP_ALTERNATE_SHELL
 ; On Linux systems, the Xorg X11 server is normally invoked using
 ; no_new_privs to avoid problems if the executable is suid. This may,
 ; however, interfere with the use of security modules such as AppArmor.
 ; Leave this unset unless you need to disable it.
 #XorgNoNewPrivileges=true
 ; Specify the group which is to have read access to the directory where
-; local sockets for the session are created. This is normally the GID
-; which the xrdp process runs as.
-; Default is 'root'
-#SessionSockdirGroup=root
+; local sockets for the session are created.
+; This MUST be the same as runtime_group in xrdp.ini, or xrdp will not
+; be able to connect to your sessions.
+#SessionSockdirGroup=xrdp
 
 
 [Sessions]
@@ -105,6 +114,9 @@ IdleTimeLimit=0
 ;      I        Sessions are separated by IP address
 ;
 ;   The options U and B are always active, and cannot be de-selected.
+;
+;   The "" in the text above are for readability. Do not include them in
+;   the string
 Policy=Default
 
 [Logging]
@@ -132,13 +144,12 @@ EnableSyslog=true
 ; on your distribution and version. Find out the appropriate path for your
 ; environment. The typical path is known as follows:
 ;
-; Fedora 26 or later    :  param=/usr/libexec/Xorg
-; Debian 9 or later     :  param=/usr/lib/xorg/Xorg
-; Ubuntu 16.04 or later :  param=/usr/lib/xorg/Xorg
-; Arch Linux            :  param=/usr/lib/Xorg
-; CentOS 7              :  param=/usr/bin/Xorg or param=Xorg
-; CentOS 8              :  param=/usr/libexec/Xorg
-; FreeBSD (from 2022Q4) :  param=/usr/local/libexec/Xorg
+; Fedora 26 or later          :  param=/usr/libexec/Xorg
+; Alma/Rocky Linux 8 or later :  param=/usr/libexec/Xorg
+; Debian 9 or later           :  param=/usr/lib/xorg/Xorg
+; Ubuntu 16.04 or later       :  param=/usr/lib/xorg/Xorg
+; Arch Linux                  :  param=/usr/lib/Xorg
+; FreeBSD (from 2022Q4)       :  param=/usr/local/libexec/Xorg
 ;
 param=Xorg
 ; Leave the rest parameters as-is unless you understand what will happen.
@@ -165,15 +176,23 @@ param=96
 #FuseMountName=/run/user/%u/thinclient_drives
 #FuseMountName=/media/thinclient_drives/%U/thinclient_drives
 FuseMountName=thinclient_drives
+#FuseMountNameColonCharReplacement=
 ; this value allows only the user to access their own mapped drives.
 ; Make this more permissive (e.g. 022) if required.
 FileUmask=077
 ; Can be used to disable FUSE functionality - see sesman.ini(5)
 #EnableFuseMount=false
+; Can be used to enable direct I/O to FUSE open file calls. This is useful
+; when open file handles need to immediately see changes made on the client
+; side. There is a performance hit, so use with caution.
+#FuseDirectIO=true
 ; Uncomment this line only if you are using GNOME 3 versions 3.29.92
 ; and up, and you wish to cut-paste files between Nautilus and Windows. Do
 ; not use this setting for GNOME 4, or other file managers
 #UseNautilus3FlistFormat=true
+; Uncomment this line if your file manager erroneously reports
+; 'No free space' when trying to copy any files to remote drives.
+#FuseRootReportMaxFree=true
 ; sound redirection
 ; workaround for Microsoft mstsc.exe to suppress noise.
 ; SoundNumSilentFramesAAC | SoundNumSilentFramesMP3 silent frames are sent before SNDC_CLOSE is sent.
@@ -197,6 +216,11 @@ EnableSyslog=true
 #EnableConsole=false
 #ConsoleLevel=INFO
 #EnableProcessId=false
+; Log file path
+; Set this to move the log file away from its default location. You may want
+; to do this for (e.g.) NFS-mounted home directories
+; See sesman.ini(5) for the format of this parameter
+#LogFilePath=/run/user/%u/xrdp
 
 [ChansrvLoggingPerLogger]
 ; Note: per logger configuration is only used if xrdp is built with
@@ -205,4 +229,4 @@ EnableSyslog=true
 #main()=INFO
 
 [SessionVariables]
-PULSE_SCRIPT=/etc/xrdp/pulse/default.pa
+PULSE_SCRIPT=@sesmansysconfdir@/pulse/default.pa

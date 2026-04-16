@@ -1,0 +1,17 @@
+#!/bin/sh
+
+set -eu
+
+# This is a manual step, documented (via a Debian patch) in xrdp.ini,
+# without it the script gives us this error line:
+# [  NG  ] /etc/xrdp/key.pem is not readable by xrdp:xrdp
+adduser xrdp ssl-cert
+
+echo "Checking if xrdp is properly configured to run in non-privileged mode..."
+echo "$ /usr/share/xrdp/xrdp-chkpriv"
+/usr/share/xrdp/xrdp-chkpriv | tee $AUTOPKGTEST_TMP/xrdp.out
+
+if grep -q -E '\[ *(NG|WARN) *\]' $AUTOPKGTEST_TMP/xrdp.out; then
+    echo "xrdp-chkpriv FAILED!" >&2
+    exit 1
+fi

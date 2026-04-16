@@ -364,6 +364,26 @@ xrdp_load_keyboard_layout(struct xrdp_client_info *client_info)
                 break;
             }
         }
+        if (rdp_layout[0] == '\0' && (client_info->keylayout & ~0xffff) != 0)
+        {
+            // We failed to match the layout, but we may be able
+            // to match on the lower 16-bits
+            int alt_layout = client_info->keylayout & 0xffff;
+            for (index = 0; index < items->count; index++)
+            {
+                item = (char *)list_get_item(items, index);
+                value = (char *)list_get_item(values, index);
+                int rdp_layout_id = g_htoi(value);
+                if (rdp_layout_id == alt_layout)
+                {
+                    g_strncpy(rdp_layout, item, 255);
+                    LOG(LOG_LEVEL_INFO,
+                        "Failed to match layout %08X, but matched %04X to %s",
+                        client_info->keylayout, alt_layout, rdp_layout);
+                    break;
+                }
+            }
+        }
         list_clear(items);
         list_clear(values);
         file_read_section(fd, section_layouts_map, items, values);
@@ -1728,7 +1748,6 @@ xrdp_sec_process_mcs_data_CS_CORE(struct xrdp_sec *self, struct stream *s)
     int highColorDepth;
     int supportedColorDepths;
     int earlyCapabilityFlags;
-    char clientName[INFO_CLIENT_NAME_BYTES / 2] = { '\0' };
 
     UNUSED_VAR(version);
     struct xrdp_client_info *client_info = &self->rdp_layer->client_info;
@@ -1756,8 +1775,8 @@ xrdp_sec_process_mcs_data_CS_CORE(struct xrdp_sec *self, struct stream *s)
             break;
     }
     in_uint8s(s, 2); /* SASSequence */
-    in_uint8s(s, 4); /* keyboardLayout */
-    in_uint8s(s, 4); /* clientBuild */
+    in_uint32_le(s, client_info->keylayout);
+    in_uint32_le(s, client_info->build);
 
     /* clientName
      *
@@ -1765,26 +1784,35 @@ xrdp_sec_process_mcs_data_CS_CORE(struct xrdp_sec *self, struct stream *s)
      * isn't by ignoring the last two bytes and treating them as a
      * terminator anyway */
     in_utf16_le_fixed_as_utf8(s, (INFO_CLIENT_NAME_BYTES - 2) / 2,
-                              clientName, sizeof(clientName));
+                              client_info->hostname,
+                              sizeof(client_info->hostname));
     in_uint8s(s, 2); /* See above */
-    LOG(LOG_LEVEL_INFO, "Connected client computer name: %s", clientName);
-    in_uint8s(s, 4); /* keyboardType */
-    in_uint8s(s, 4); /* keyboardSubType */
+    LOG(LOG_LEVEL_INFO, "Connected client computer name: %s",
+        client_info->hostname);
+    in_uint32_le(s, client_info->keyboard_type); /* [MS-RDPBCGR] TS_UD_CS_CORE keyboardType */
+    in_uint32_le(s, client_info->keyboard_subtype); /* [MS-RDPBCGR] TS_UD_CS_CORE keyboardSubType */
     in_uint8s(s, 4); /* keyboardFunctionKey */
     in_uint8s(s, 64); /* imeFileName */
     LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] TS_UD_CS_CORE "
               "<Required fields> version %08x, desktopWidth %d, "
               "desktopHeight %d, colorDepth %s, SASSequence (ignored), "
-              "keyboardLayout (ignored), clientBuild (ignored), "
-              "clientName %s, keyboardType (ignored), "
-              "keyboardSubType (ignored), keyboardFunctionKey (ignored), "
+              "keyboardLayout 0x%8.8x, clientBuild %d, "
+              "clientName %s, keyboardType 0x%8.8x, "
+              "keyboardSubType 0x%8.8x, keyboardFunctionKey (ignored), "
               "imeFileName (ignored)",
               version,
               client_info->display_sizes.session_width,
               client_info->display_sizes.session_height,
-              (colorDepth == 0xca00 ? "RNS_UD_COLOR_4BPP" :
-               colorDepth == 0xca01 ? "RNS_UD_COLOR_8BPP" : "unknown"),
-              clientName);
+              (colorDepth == RNS_UD_COLOR_4BPP ? "RNS_UD_COLOR_4BPP" :
+               colorDepth == RNS_UD_COLOR_8BPP ? "RNS_UD_COLOR_8BPP" :
+               "unknown"),
+              client_info->keylayout,
+              client_info->build,
+              client_info->hostname,
+              client_info->keyboard_type,
+              client_info->keyboard_subtype);
+
+    xrdp_load_keyboard_layout(client_info);
 
     /* TS_UD_CS_CORE optional fields */
     if (!s_check_rem(s, 2))
@@ -2158,31 +2186,19 @@ xrdp_sec_process_mcs_data_channels(struct xrdp_sec *self, struct stream *s)
             g_free(channel_item);
             return 1;
         }
-        in_uint8a(s, channel_item->name, 8);
+
+        in_uint8a(s, channel_item->name, CHANNEL_NAME_LEN + 1);
+        // The channel name *should* be null-terminated. Add a back-stop
+        // terminator in case it isn't.
+        channel_item->name[CHANNEL_NAME_LEN] = '\0';
         in_uint32_le(s, channel_item->flags);
 
-        if (g_strlen(channel_item->name) > 0 && g_strlen(channel_item->name) < 8)
-        {
-            LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] "
-                      "TS_UD_CS_NET.CHANNEL_DEF %d, name %s, options 0x%8.8x",
-                      index, channel_item->name, channel_item->flags);
-            channel_item->chanid = next_mcs_channel_id++;
-            list_add_item(self->mcs_layer->channel_list,
-                          (intptr_t) channel_item);
-            LOG(LOG_LEVEL_DEBUG,
-                "Adding channel: name %s, channel id %d, flags 0x%8.8x",
-                channel_item->name, channel_item->chanid, channel_item->flags);
-        }
-        else
-        {
-            LOG_DEVEL(LOG_LEVEL_WARNING, "Received [MS-RDPBCGR] "
-                      "TS_UD_CS_NET.CHANNEL_DEF %d, skipped because of "
-                      "malformed channel name.", index);
-            LOG_DEVEL_HEXDUMP(LOG_LEVEL_WARNING,
-                              "[MS-RDPBCGR] TS_UD_CS_NET.CHANNEL_DEF name",
-                              channel_item->name, 8);
-            g_free(channel_item);
-        }
+        channel_item->chanid = next_mcs_channel_id++;
+        list_add_item(self->mcs_layer->channel_list,
+                      (intptr_t) channel_item);
+        LOG(LOG_LEVEL_DEBUG,
+            "Adding channel: name %s, channel id %d, flags 0x%8.8x",
+            channel_item->name, channel_item->chanid, channel_item->flags);
     }
 
     /* Set the user channel as well */
@@ -2421,88 +2437,6 @@ xrdp_sec_process_mcs_data(struct xrdp_sec *self)
 }
 
 /*****************************************************************************/
-/* Process the mcs client data [ITU T.124] ConferenceCreateRequest userData field
-   as a [MS-RDPBCGR] TS_UD_CS_CORE struct */
-/* TODO: why does this method parse the strust from back to front (resetting
-   after each field) instead of from front to back like the rest of the parsing
-   code? */
-/* TODO: why does this method exist when the same struct is parsed in
-   xrdp_sec_process_mcs_data_CS_CORE and there does not seem to be any
-   dependencies preventing a call to that function. */
-/* TODO: this is a brittle function that assumes field offsets in the stream
-   instead of parsing the variable length fields of [ITU T.124] ConferenceCreateRequest */
-static int
-xrdp_sec_in_mcs_data(struct xrdp_sec *self)
-{
-    struct stream *s = (struct stream *)NULL;
-    struct xrdp_client_info *client_info = (struct xrdp_client_info *)NULL;
-
-    client_info = &(self->rdp_layer->client_info);
-    s = &(self->client_mcs_data);
-    /* get hostname, it's unicode */
-    s->p = s->data;
-    if (!s_check_rem_and_log(s, 47, "Parsing [ITU T.124] ConferenceCreateRequest"))
-    {
-        return 1;
-    }
-    in_uint8s(s, 47); /* skip [ITU T.124] ConferenceCreateRequest up to the
-                         userData field, and skip [MS-RDPBCGR] TS_UD_CS_CORE
-                         up to the clientName field */
-    if (!s_check_rem_and_log(s, INFO_CLIENT_NAME_BYTES,
-                             "Parsing [MS-RDPBCGR] TS_UD_CS_CORE clientName"))
-    {
-        return 1;
-    }
-    in_utf16_le_fixed_as_utf8(s, (INFO_CLIENT_NAME_BYTES - 2) / 2,
-                              client_info->hostname,
-                              sizeof(client_info->hostname));
-    in_uint8s(s, 2); /* Ignored - terminator for full-size clientName */
-
-    /* get build */
-    s->p = s->data;
-    if (!s_check_rem_and_log(s, 43 + 4, "Parsing [MS-RDPBCGR] TS_UD_CS_CORE clientBuild"))
-    {
-        return 1;
-    }
-    in_uint8s(s, 43);
-    in_uint32_le(s, client_info->build); /* [MS-RDPBCGR] TS_UD_CS_CORE clientBuild */
-    /* get keylayout */
-    s->p = s->data;
-    if (!s_check_rem_and_log(s, 39 + 4, "Parsing [MS-RDPBCGR] TS_UD_CS_CORE keyboardLayout"))
-    {
-        return 1;
-    }
-    in_uint8s(s, 39);
-    in_uint32_le(s, client_info->keylayout); /* [MS-RDPBCGR] TS_UD_CS_CORE keyboardLayout */
-    /* get keyboard type / subtype */
-    s->p = s->data;
-    if (!s_check_rem_and_log(s, 79 + 8, "Parsing [MS-RDPBCGR] TS_UD_CS_CORE keyboardType"))
-    {
-        return 1;
-    }
-    in_uint8s(s, 79);
-    in_uint32_le(s, client_info->keyboard_type); /* [MS-RDPBCGR] TS_UD_CS_CORE keyboardType */
-    in_uint32_le(s, client_info->keyboard_subtype); /* [MS-RDPBCGR] TS_UD_CS_CORE keyboardSubType */
-    LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] TS_UD_CS_CORE "
-              "<Required fields> version (ignored), desktopWidth (ignored), "
-              "desktopHeight (ignored), colorDepth (ignored), SASSequence (ignored), "
-              "keyboardLayout 0x%8.8x, clientBuild %d, "
-              "clientName %s, keyboardType 0x%8.8x, "
-              "keyboardSubType 0x%8.8x, keyboardFunctionKey (ignored), "
-              "imeFileName (ignored)",
-              client_info->keylayout,
-              client_info->build,
-              client_info->hostname,
-              client_info->keyboard_type,
-              client_info->keyboard_subtype);
-
-    xrdp_load_keyboard_layout(client_info);
-    s->p = s->data;
-
-    return 0;
-}
-
-/*****************************************************************************/
 /* returns error */
 int
 xrdp_sec_init_rdp_security(struct xrdp_sec *self)
@@ -2580,7 +2514,11 @@ xrdp_sec_incoming(struct xrdp_sec *self)
     }
 
     /* initialize selected security layer */
-    if (iso->selectedProtocol > PROTOCOL_RDP)
+    if (self->rdp_layer->client_info.vmconnect && iso->selectedProtocol > PROTOCOL_RDP)
+    {
+        /* Security handled by host: do nothing. */
+    }
+    else if (iso->selectedProtocol > PROTOCOL_RDP)
     {
         /* init tls security */
 
@@ -2685,12 +2623,6 @@ xrdp_sec_incoming(struct xrdp_sec *self)
     LOG_DEVEL_HEXDUMP(LOG_LEVEL_TRACE, "server mcs data sent",
                       self->server_mcs_data.data,
                       (int)(self->server_mcs_data.end - self->server_mcs_data.data));
-
-    if (xrdp_sec_in_mcs_data(self) != 0)
-    {
-        LOG(LOG_LEVEL_ERROR, "xrdp_sec_incoming: xrdp_sec_in_mcs_data failed");
-        return 1;
-    }
 
     return 0;
 }

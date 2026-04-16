@@ -14,6 +14,16 @@
 
 struct xrdp_enc_data;
 
+typedef void *(*xrdp_encoder_h264_create_proc)(void);
+typedef int (*xrdp_encoder_h264_delete_proc)(void *handle);
+typedef int (*xrdp_encoder_h264_encode_proc)(
+    void *handle, int session, int left, int top,
+    int width, int height, int twidth, int theight,
+    int format, const char *data,
+    short *crects, int num_crects,
+    char *cdata, int *cdata_bytes,
+    int connection_type, int *flags_ptr);
+
 /* for codec mode operations */
 struct xrdp_encoder
 {
@@ -46,6 +56,10 @@ struct xrdp_encoder
     int quant_idx_y;
     int quant_idx_u;
     int quant_idx_v;
+    int pad0;
+    xrdp_encoder_h264_create_proc xrdp_encoder_h264_create;
+    xrdp_encoder_h264_delete_proc xrdp_encoder_h264_delete;
+    xrdp_encoder_h264_encode_proc xrdp_encoder_h264_encode;
 };
 
 /* cmd_id = 0 */

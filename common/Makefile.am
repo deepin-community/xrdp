@@ -23,7 +23,7 @@ include_HEADERS = \
   xrdp_sockets.h
 
 AM_CPPFLAGS = \
-  -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
+  -DXRDP_CFG_PATH=\"${sysconfdir}/${sysconfsubdir}\" \
   -DXRDP_SBIN_PATH=\"${sbindir}\" \
   -DXRDP_SHARE_PATH=\"${datadir}/xrdp\" \
   -DXRDP_PID_PATH=\"${localstatedir}/run\" \
@@ -41,6 +41,7 @@ libcommon_la_SOURCES = \
   arch.h \
   base64.h \
   base64.c \
+  channel_defs.h \
   defines.h \
   fifo.c \
   fifo.h \

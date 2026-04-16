@@ -24,9 +24,17 @@ setxkbmap ${OLD_SETTINGS}
 setxkbmap -model pc105 -layout gb
 ./xrdp-genkeymap ../instfiles/km-00000809.ini
 
+# Czech 'cz' 0x00000405
+setxkbmap -model pc105 -layout cz
+./xrdp-genkeymap ../instfiles/km-00000405.ini
+
 # German 'de' 0x00000407
 setxkbmap -model pc104 -layout de
 ./xrdp-genkeymap ../instfiles/km-00000407.ini
+
+# Hungarian 'hu' 0x0000040e
+setxkbmap -model pc105 -layout hu
+./xrdp-genkeymap ../instfiles/km-0000040e.ini
 
 # Italian 'it' 0x00000410
 setxkbmap -model pc104 -layout it
@@ -47,6 +55,19 @@ setxkbmap -model pc104 -layout ru
 # Sweden 'se' 0x0000041d
 setxkbmap -model pc104 -layout se
 ./xrdp-genkeymap ../instfiles/km-0000041d.ini
+
+# Slovenian 'si' 0x00000424
+setxkbmap -model pc104 -layout si
+./xrdp-genkeymap ../instfiles/km-00000424.ini
+
+# Latvian 'lv' 0x00000426
+setxkbmap -model pc104 -layout lv -variant ergonomic
+./xrdp-genkeymap ../instfiles/km-00000426.ini
+
+# Latvian standard 'lv' 0x00010426
+# 20426 Latvian(Standard) is symlinked to 10426 Latvian(QWERTY) elsewhere
+setxkbmap -model pc104 -layout lv
+./xrdp-genkeymap ../instfiles/km-00010426.ini
 
 # Portuguese -PT 'pt-pt' 0x00000816
 setxkbmap -model pc104 -layout pt

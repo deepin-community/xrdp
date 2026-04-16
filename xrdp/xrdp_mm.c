@@ -36,11 +36,35 @@
 #include "xrdp_channel.h"
 #include <limits.h>
 
+#if defined(XRDP_OPENH264)
+#include "xrdp_encoder_openh264.h"
+#endif
+
 /* Forward declarations */
 static int
 xrdp_mm_chansrv_connect(struct xrdp_mm *self, const char *port);
 static void
 xrdp_mm_connect_sm(struct xrdp_mm *self);
+
+/*****************************************************************************/
+static void
+init_libh264_loaded(struct xrdp_mm *self)
+{
+#if defined(XRDP_OPENH264)
+    // Note that if this fails, and x264 is also configured, x264
+    // will not be considered as a fallback.
+    self->libh264_loaded = xrdp_encoder_openh264_install_ok();
+    if (!self->libh264_loaded)
+    {
+        LOG(LOG_LEVEL_ERROR, "OpenH264 Codec is not installed correctly. "
+            "H.264 will not be used");
+    }
+#elif defined (XRDP_H264)
+    self->libh264_loaded = 1;
+#else
+    self->libh264_loaded = 0;
+#endif
+}
 
 /*****************************************************************************/
 struct xrdp_mm *
@@ -57,6 +81,16 @@ xrdp_mm_create(struct xrdp_wm *owner)
 
     self->uid = -1; /* Never good to default UIDs to 0 */
 
+    // Resize queue support. The resize queue is available early on,
+    // but isn't processed until start_processing_resize_queue() is
+    // called.
+    self->resize_queue = list_create();
+    self->resize_queue->auto_free = 1;
+    self->resize_data = NULL;
+    self->resize_ready = NULL_WAIT_OBJ;
+
+    init_libh264_loaded(self);
+
     LOG_DEVEL(LOG_LEVEL_INFO, "xrdp_mm_create: bpp %d mcs_connection_type %d "
               "jpeg_codec_id %d v3_codec_id %d rfx_codec_id %d "
               "h264_codec_id %d",
@@ -68,7 +102,7 @@ xrdp_mm_create(struct xrdp_wm *owner)
               self->wm->client_info->h264_codec_id);
 
     if ((self->wm->client_info->gfx == 0) &&
-            ((self->wm->client_info->h264_codec_id != 0) ||
+            ((self->wm->client_info->h264_codec_id != 0 && self->libh264_loaded) ||
              (self->wm->client_info->jpeg_codec_id != 0) ||
              (self->wm->client_info->rfx_codec_id != 0)))
     {
@@ -243,6 +277,10 @@ xrdp_mm_create_session(struct xrdp_mm *self)
     {
         case XVNC_SESSION_CODE:
             type = SCP_SESSION_TYPE_XVNC;
+            break;
+
+        case XVNC_UDS_SESSION_CODE:
+            type = SCP_SESSION_TYPE_XVNC_UDS;
             break;
 
         case  XORG_SESSION_CODE:
@@ -468,9 +506,13 @@ xrdp_mm_setup_mod2(struct xrdp_mm *self)
         {
             if (self->code == XVNC_SESSION_CODE)
             {
-                g_snprintf(text, sizeof(text), "%d", 5900 + self->display);
+                if (self->use_sesman)
+                {
+                    g_snprintf(text, sizeof(text), "%d", 5900 + self->display);
+                }
             }
-            else if (self->code == XORG_SESSION_CODE)
+            else if (self->code == XORG_SESSION_CODE ||
+                     self->code == XVNC_UDS_SESSION_CODE)
             {
                 g_snprintf(text, sizeof(text), XRDP_X11RDP_STR,
                            self->uid, self->display);
@@ -577,9 +619,7 @@ xrdp_mm_trans_send_channel_setup(struct xrdp_mm *self, struct trans *trans)
     int chan_flags;
     int size;
     struct stream *s;
-    char chan_name[256];
-
-    g_memset(chan_name, 0, sizeof(char) * 256);
+    char chan_name[CHANNEL_NAME_LEN + 1];
 
     s = trans_get_out_s(trans, 8192);
 
@@ -599,7 +639,7 @@ xrdp_mm_trans_send_channel_setup(struct xrdp_mm *self, struct trans *trans)
         if (libxrdp_query_channel(self->wm->session, chan_id, chan_name,
                                   &chan_flags) == 0)
         {
-            out_uint8a(s, chan_name, 8);
+            out_uint8a(s, chan_name, CHANNEL_NAME_LEN + 1);
             out_uint16_le(s, chan_id);
             out_uint16_le(s, chan_flags);
             ++output_chan_count;
@@ -1270,13 +1310,16 @@ xrdp_mm_egfx_caps_advertise(void *user, int caps_count,
     struct xrdp_mm *self;
     struct xrdp_bitmap *screen;
     int index;
-    int best_index;
     int best_h264_index;
     int best_pro_index;
     int error;
     int version;
     int flags;
     struct ver_flags_t *ver_flags;
+
+#if !defined(XRDP_H264)
+    UNUSED_VAR(best_h264_index);
+#endif
 
     LOG(LOG_LEVEL_INFO, "xrdp_mm_egfx_caps_advertise:");
     self = (struct xrdp_mm *) user;
@@ -1298,7 +1341,6 @@ xrdp_mm_egfx_caps_advertise(void *user, int caps_count,
     }
     /* sort by version */
     g_qsort(ver_flags, caps_count, sizeof(struct ver_flags_t), cmpverfunc);
-    best_index = -1;
     best_h264_index = -1;
     best_pro_index = -1;
     for (index = 0; index < caps_count; index++)
@@ -1345,19 +1387,34 @@ xrdp_mm_egfx_caps_advertise(void *user, int caps_count,
                 break;
         }
     }
-    if (best_pro_index >= 0)
+
+    int best_index = -1;
+    struct xrdp_tconfig_gfx_codec_order *co = &self->wm->gfx_config->codec;
+    char cobuff[64];
+
+    LOG(LOG_LEVEL_INFO, "Codec search order is %s",
+        tconfig_codec_order_to_str(co, cobuff, sizeof(cobuff)));
+    for (index = 0 ; index < co->codec_count ; ++index)
     {
-        best_index = best_pro_index;
-        self->egfx_flags = XRDP_EGFX_RFX_PRO;
-    }
-    /* prefer h264, todo use setting in xrdp.ini for this */
-    if (best_h264_index >= 0)
-    {
-#if defined(XRDP_X264) || defined(XRDP_NVENC)
-        best_index = best_h264_index;
-        self->egfx_flags = XRDP_EGFX_H264;
+#if defined(XRDP_H264)
+        if (co->codecs[index] == XTC_H264 && best_h264_index >= 0)
+        {
+            LOG(LOG_LEVEL_INFO, "Matched H264 mode");
+            best_index = best_h264_index;
+            self->egfx_flags = XRDP_EGFX_H264;
+            break;
+        }
 #endif
+
+        if (co->codecs[index] == XTC_RFX && best_pro_index >= 0)
+        {
+            LOG(LOG_LEVEL_INFO, "Matched RFX mode");
+            best_index = best_pro_index;
+            self->egfx_flags = XRDP_EGFX_RFX_PRO;
+            break;
+        }
     }
+
     if (best_index >= 0)
     {
         LOG(LOG_LEVEL_INFO, "  replying version 0x%8.8x flags 0x%8.8x",
@@ -1413,19 +1470,34 @@ xrdp_mm_egfx_caps_advertise(void *user, int caps_count,
 static int
 xrdp_mm_update_module_frame_ack(struct xrdp_mm *self)
 {
-    int fif;
     struct xrdp_encoder *encoder;
 
     encoder = self->encoder;
-    fif = encoder->frames_in_flight;
-    if (encoder->frame_id_client + fif > encoder->frame_id_server)
+    if (encoder == NULL)
     {
-        if (encoder->frame_id_server > encoder->frame_id_server_sent)
+        // Can't pass the ack to the encoder. Tell the module all
+        // frames are ACK'd
+        if (self->mod != NULL)
         {
-            LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_mm_update_module_ack: "
-                      "frame_id_server %d", encoder->frame_id_server);
-            encoder->frame_id_server_sent = encoder->frame_id_server;
-            self->mod->mod_frame_ack(self->mod, 0, encoder->frame_id_server);
+            self->mod->mod_frame_ack(self->mod, 0, INT_MAX);
+        }
+    }
+    else
+    {
+        int fif = encoder->frames_in_flight;
+        if (encoder->frame_id_client + fif > encoder->frame_id_server)
+        {
+            if (encoder->frame_id_server > encoder->frame_id_server_sent)
+            {
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_mm_update_module_ack: "
+                          "frame_id_server %d", encoder->frame_id_server);
+                encoder->frame_id_server_sent = encoder->frame_id_server;
+                if (self->mod != NULL)
+                {
+                    self->mod->mod_frame_ack(self->mod, 0,
+                                             encoder->frame_id_server);
+                }
+            }
         }
     }
     return 0;
@@ -1533,6 +1605,69 @@ sync_dynamic_monitor_data(struct xrdp_wm *wm,
 }
 
 /******************************************************************************/
+/**
+ * Single point to add requests to the resize queue
+ *
+ * @param self xrdp_mm object
+ * @param src Where the request is coming from
+ * @param description The requt we're adding
+ * @return 0 for success
+ */
+static int
+add_resize_request_to_queue(struct xrdp_mm *self,
+                            enum resize_queue_source src,
+                            const struct display_size_description *description)
+{
+    int rv = 0;
+    struct resize_queue_item *resize_queue_item;
+    resize_queue_item = (struct resize_queue_item *)
+                        malloc(sizeof(struct resize_queue_item));
+    if (resize_queue_item == NULL)
+    {
+        rv = 1;
+    }
+    else
+    {
+        resize_queue_item->src = src;
+        resize_queue_item->description = *description;
+
+        // See if there's already a previous item on the queue
+        if (self->resize_queue->count > 0)
+        {
+            int prev_num = self->resize_queue->count - 1;
+            struct resize_queue_item *prev;
+            prev = (struct resize_queue_item *)
+                   list_get_item(self->resize_queue, prev_num);
+            // If this is a RQ_FROM_CLIENT, and the previous item on the
+            // resize_queue is also RQ_FROM_CLIENT, and it hasn't yet been
+            // processed, we can simply ignore it
+            if (src == RQ_FROM_CLIENT && prev->src == RQ_FROM_CLIENT)
+            {
+                LOG_DEVEL(LOG_LEVEL_DEBUG,
+                          "dynamic_monitor_data: Removing unactioned resize request"
+                          " width %d, height %d.",
+                          prev->description.session_width,
+                          prev->description.session_height);
+                list_remove_item(self->resize_queue, prev_num);
+            }
+        }
+        if (!list_add_item(self->resize_queue, (tintptr)resize_queue_item))
+        {
+            free(resize_queue_item);
+            rv = 1;
+        }
+        else
+        {
+            // This call only has an effect if the wait_obj is not
+            // NULL_WAIT_OBJ
+            g_set_wait_obj(self->resize_ready);
+        }
+    }
+
+    return rv;
+}
+
+/******************************************************************************/
 static int
 dynamic_monitor_data(intptr_t id, int chan_id, char *data, int bytes)
 {
@@ -1544,7 +1679,7 @@ dynamic_monitor_data(intptr_t id, int chan_id, char *data, int bytes)
     struct xrdp_process *pro;
     struct xrdp_wm *wm;
     int monitor_layout_size;
-    struct display_size_description *display_size_data;
+    struct display_size_description description;
 
     LOG_DEVEL(LOG_LEVEL_TRACE, "dynamic_monitor_data:");
     pro = (struct xrdp_process *) id;
@@ -1601,26 +1736,26 @@ dynamic_monitor_data(intptr_t id, int chan_id, char *data, int bytes)
         return 1;
     }
 
-    display_size_data = (struct display_size_description *)
-                        g_malloc(sizeof(struct display_size_description), 1);
-    if (!display_size_data)
-    {
-        return 1;
-    }
-    error = libxrdp_process_monitor_stream(s, display_size_data, 1);
+    error = libxrdp_process_monitor_stream(s, &description, 1);
     if (error)
     {
         LOG(LOG_LEVEL_ERROR, "dynamic_monitor_data:"
             " libxrdp_process_monitor_stream"
             " failed with error %d.", error);
-        g_free(display_size_data);
         return error;
     }
-    list_add_item(wm->mm->resize_queue, (tintptr)display_size_data);
-    g_set_wait_obj(wm->mm->resize_ready);
+    error = add_resize_request_to_queue(wm->mm, RQ_FROM_CLIENT, &description);
+    if (error)
+    {
+        LOG(LOG_LEVEL_ERROR, "dynamic_monitor_data:"
+            " out of memory adding resize request to queue");
+        return error;
+    }
     LOG(LOG_LEVEL_DEBUG, "dynamic_monitor_data:"
-        " received width %d, received height %d.",
-        display_size_data->session_width, display_size_data->session_height);
+        " received width %d, received height %d, queue %s",
+        description.session_width,
+        description.session_height,
+        (wm->mm->resize_ready == NULL_WAIT_OBJ) ? "inactive" : "active");
     return 0;
 }
 
@@ -1869,6 +2004,19 @@ process_display_control_monitor_layout_data(struct xrdp_wm *wm)
 }
 
 /******************************************************************************/
+#ifdef USE_DEVEL_LOGGING
+static const char *
+resize_queue_source_to_str(enum resize_queue_source src)
+{
+    return
+        (src == RQ_IGNORE_MARKER) ? "RQ_IGNORE_MARKER" :
+        (src == RQ_FROM_SERVER) ? "RQ_FROM_SERVER" :
+        (src == RQ_FROM_CLIENT) ? "RQ_FROM_CLIENT" :
+        /* default */ "<unknown>";
+}
+#endif
+
+/******************************************************************************/
 static int
 dynamic_monitor_process_queue(struct xrdp_mm *self)
 {
@@ -1893,30 +2041,33 @@ dynamic_monitor_process_queue(struct xrdp_mm *self)
             LOG_DEVEL(LOG_LEVEL_DEBUG, "Resize queue is empty.");
             return 0;
         }
-        LOG_DEVEL(LOG_LEVEL_DEBUG, "dynamic_monitor_process_queue: Queue is"
-                  " not empty. Filling out description.");
-        const struct display_size_description *queue_head =
-            (struct display_size_description *)
-            list_get_item(self->resize_queue, 0);
+        const struct resize_queue_item *queue_head =
+            (struct resize_queue_item *)list_get_item(self->resize_queue, 0);
 
-        const int invalid_dimensions = queue_head->session_width <= 0
-                                       || queue_head->session_height <= 0;
+        LOG_DEVEL(LOG_LEVEL_INFO, "dynamic_monitor_process_queue: source of"
+                  " resize queue head is %s",
+                  resize_queue_source_to_str(queue_head->src));
+        const struct display_size_description *queued_size =
+                &queue_head->description;
+
+        const int invalid_dimensions = queued_size->session_width <= 0
+                                       || queued_size->session_height <= 0;
 
         if (invalid_dimensions)
         {
             LOG(LOG_LEVEL_DEBUG,
                 "dynamic_monitor_process_queue: Not allowing"
                 " resize due to invalid dimensions (w: %d x h: %d)",
-                queue_head->session_width,
-                queue_head->session_height);
+                queued_size->session_width,
+                queued_size->session_height);
         }
 
         const struct display_size_description *current_size
                 = &wm->client_info->display_sizes;
 
-        const int already_this_size = queue_head->session_width
+        const int already_this_size = queued_size->session_width
                                       == current_size->session_width
-                                      && queue_head->session_height
+                                      && queued_size->session_height
                                       == current_size->session_height;
 
         if (already_this_size)
@@ -1924,8 +2075,8 @@ dynamic_monitor_process_queue(struct xrdp_mm *self)
             LOG(LOG_LEVEL_DEBUG,
                 "dynamic_monitor_process_queue: Not resizing."
                 " Already this size. (w: %d x h: %d)",
-                queue_head->session_width,
-                queue_head->session_height);
+                queued_size->session_width,
+                queued_size->session_height);
         }
 
         if (!invalid_dimensions && !already_this_size)
@@ -1934,8 +2085,7 @@ dynamic_monitor_process_queue(struct xrdp_mm *self)
                 sizeof(struct display_control_monitor_layout_data);
             self->resize_data = (struct display_control_monitor_layout_data *)
                                 g_malloc(LAYOUT_DATA_SIZE, 1);
-            g_memcpy(&(self->resize_data->description), queue_head,
-                     sizeof(struct display_size_description));
+            self->resize_data->description = *queued_size;
             const int time = g_time3();
             self->resize_data->start_time = time;
             self->resize_data->last_state_update_timestamp = time;
@@ -1994,8 +2144,6 @@ dynamic_monitor_initialize(struct xrdp_mm *self)
     struct xrdp_drdynvc_procs d_procs;
     int flags;
     int error;
-    char buf[1024];
-    int pid;
 
     LOG_DEVEL(LOG_LEVEL_TRACE, "dynamic_monitor_initialize:");
 
@@ -2016,15 +2164,6 @@ dynamic_monitor_initialize(struct xrdp_mm *self)
         return error;
     }
 
-    // Initialize xrdp_mm specific variables.
-    self->resize_queue = list_create();
-    self->resize_queue->auto_free = 1;
-    pid = g_getpid();
-    /* setup wait objects for signaling */
-    g_snprintf(buf, sizeof(buf), "xrdp_%8.8x_resize_ready", pid);
-    self->resize_ready = g_create_wait_obj(buf);
-    self->resize_data = NULL;
-
     return error;
 }
 
@@ -2032,7 +2171,12 @@ dynamic_monitor_initialize(struct xrdp_mm *self)
 int
 xrdp_mm_drdynvc_up(struct xrdp_mm *self)
 {
-    struct display_control_monitor_layout_data *ignore_marker;
+    struct display_size_description null_desc =
+    {
+        .monitorCount = 0,
+        .session_width = 0,
+        .session_height = 0
+    };
     const char *enable_dynamic_resize;
     int error = 0;
 
@@ -2061,10 +2205,12 @@ xrdp_mm_drdynvc_up(struct xrdp_mm *self)
             " Client likely does not support it.");
         return error;
     }
-    ignore_marker = (struct display_control_monitor_layout_data *)
-                    g_malloc(sizeof(struct display_control_monitor_layout_data),
-                             1);
-    list_add_item(self->resize_queue, (tintptr)ignore_marker);
+    error = add_resize_request_to_queue(self, RQ_IGNORE_MARKER, &null_desc);
+    if (error != 0)
+    {
+        LOG(LOG_LEVEL_ERROR, "%s: Out of memory", __func__);
+        error = 1;
+    }
     return error;
 }
 
@@ -2859,28 +3005,66 @@ static int
 parse_chansrvport(const char *value, char *dest, int dest_size, int uid)
 {
     int rv = 0;
+    int dnum = 0;
 
-    if (g_strncmp(value, "DISPLAY(", 8) == 0)
+    if (value == NULL)
+    {
+        LOG(LOG_LEVEL_WARNING,
+            "unexpectedly empty chansrvport string encountered");
+        rv = -1;
+    }
+    else if (g_strncmp(value, "DISPLAY(", 8) == 0)
     {
         const char *p = value + 8;
         const char *end = p;
 
-        /* Check next chars are digits followed by ')' */
+        /* Check next chars are digits */
         while (isdigit(*end))
         {
             ++end;
         }
 
-        if (end == p || *end != ')')
+        if (end == p)
         {
-            LOG(LOG_LEVEL_WARNING, "Ignoring invalid chansrvport string '%s'",
+            LOG(LOG_LEVEL_WARNING,
+                "Ignoring chansrvport string with bad display number '%s'",
                 value);
-            rv = -1;
+            return -1;
         }
-        else
+
+        dnum = g_atoi(p);
+
+        if (*end == ',')
         {
-            g_snprintf(dest, dest_size, XRDP_CHANSRV_STR, uid, g_atoi(p));
+            /* User has specified a UID override
+             * Check next chars are digits */
+            p = end + 1;
+            end = p;
+
+            while (isdigit(*end))
+            {
+                ++end;
+            }
+
+            if (end == p)
+            {
+                LOG(LOG_LEVEL_WARNING,
+                    "Ignoring chansrvport string with bad uid '%s'",
+                    value);
+                return -1;
+            }
+            uid = g_atoi(p);
         }
+
+        if (*end != ')')
+        {
+            LOG(LOG_LEVEL_WARNING,
+                "Ignoring badly-terminated chansrvport string '%s'",
+                value);
+            return -1;
+        }
+
+        g_snprintf(dest, dest_size, XRDP_CHANSRV_STR, uid, dnum);
     }
     else
     {
@@ -3014,13 +3198,30 @@ xrdp_mm_user_session_connect(struct xrdp_mm *self)
 void
 xrdp_mm_connect(struct xrdp_mm *self)
 {
+    const char *p;
     const char *port = xrdp_mm_get_value(self, "port");
     const char *gw_username = xrdp_mm_get_value(self, "pamusername");
 
     /* make sure we start in correct state */
     cleanup_states(self);
 
-    self->code = xrdp_mm_get_value_int(self, "code", 0);
+    /*
+     * Standard VNC sessions cannot be supported in FIPS mode, so
+     * don't default to this session type */
+    if ((p = xrdp_mm_get_value(self, "code")) != NULL)
+    {
+        self->code = g_atoi(p);
+    }
+    else if (g_fips_mode_enabled())
+    {
+        LOG(LOG_LEVEL_INFO, "FIPS: defaulting to a VNC session over UDS");
+        self->code = XVNC_UDS_SESSION_CODE;
+    }
+    else
+    {
+        LOG(LOG_LEVEL_INFO, "non-FIPS: defaulting to a VNC session over TCP");
+        self->code = XVNC_SESSION_CODE;
+    }
 
     /* Look at our module parameters to decide if we need to connect
      * to sesman or not */
@@ -3030,11 +3231,11 @@ xrdp_mm_connect(struct xrdp_mm *self)
         self->use_sesman = 1;
         /* Connecting to a remote sesman is no longer supported. For purely
          * local session types, this setting could be removed.
-         * The 'ip' value is still used for Xvnc sessions, to find the TCP
-         * address that the X server is listening on */
+         * The 'ip' value is still used for non-UDS Xvnc sessions, to find
+         * the TCP address that the X server is listening on */
         if (xrdp_mm_get_value(self, "ip") != NULL)
         {
-            if (self->code == XORG_SESSION_CODE)
+            if (self->code != XVNC_SESSION_CODE)
             {
                 xrdp_wm_log_msg(self->wm,
                                 LOG_LEVEL_WARNING,
@@ -3077,6 +3278,41 @@ xrdp_mm_connect(struct xrdp_mm *self)
 }
 
 /*****************************************************************************/
+/**
+ * Start resize queue processing
+ *
+ * The xrdp login screen does not currently support client-side resizes. We
+ * currently address this by not processing the resize queue until we are
+ * able to do so.
+ *
+ * We implement this by not creating the resize_ready wait object until
+ * we are able to process the queue. Calls made to an empty wait object
+ * are simply ignored.
+ *
+ * @param self MM module
+ */
+static void
+start_processing_resize_queue(struct xrdp_mm *self)
+{
+    if (self->resize_ready == NULL_WAIT_OBJ)
+    {
+        char buf[32];
+        int outstanding =
+            (self->resize_queue != NULL) ? self->resize_queue->count : 0;
+        int pid = g_getpid();
+        g_snprintf(buf, sizeof(buf), "xrdp_%8.8x_resize_ready", pid);
+        self->resize_ready = g_create_wait_obj(buf);
+        LOG(LOG_LEVEL_INFO,
+            "xrdp can now process resize requests (%d outstanding)",
+            outstanding);
+        if (outstanding > 0)
+        {
+            g_set_wait_obj(self->resize_ready);
+        }
+    }
+}
+
+/*****************************************************************************/
 static void
 xrdp_mm_connect_sm(struct xrdp_mm *self)
 {
@@ -3111,11 +3347,16 @@ xrdp_mm_connect_sm(struct xrdp_mm *self)
 
                     gw_username = xrdp_mm_get_value(self, "pamusername");
                     gw_password = xrdp_mm_get_value(self, "pampassword");
-                    if (!g_strcmp(gw_username, "same"))
+                    // gw_username shouldn't be NULL here, but we'll
+                    // check it anyway before dereferencing.
+                    if (gw_username != NULL &&
+                            !g_strcmp(gw_username, "same"))
                     {
                         gw_username = xrdp_mm_get_value(self, "username");
                     }
 
+                    // Default the password to the usual one if the
+                    // user hasn't specified one, or specified 'same'
                     if (gw_password == NULL ||
                             !g_strcmp(gw_password, "same"))
                     {
@@ -3152,13 +3393,14 @@ xrdp_mm_connect_sm(struct xrdp_mm *self)
             case MMCS_SESSION_LOGIN:
             {
                 // Finished with the gateway login
+                // Leave the UID set in case we need it for the chansrvport
+                // string
                 if (self->use_gw_login)
                 {
                     xrdp_wm_log_msg(self->wm, LOG_LEVEL_INFO,
                                     "access control check was successful");
                     // No reply needed for this one
                     status = scp_send_logout_request(self->sesman_trans);
-                    self->uid = -1;
                 }
 
                 if (status == 0 && self->use_sesman)
@@ -3223,6 +3465,12 @@ xrdp_mm_connect_sm(struct xrdp_mm *self)
                                 "Connecting to session");
                 /* This is synchronous - no reply message expected */
                 status = xrdp_mm_user_session_connect(self);
+                if (status == 0)
+                {
+                    // This is as good a place as any to start processing
+                    // the resize_queue
+                    start_processing_resize_queue(self);
+                }
             }
             break;
 
@@ -3231,24 +3479,35 @@ xrdp_mm_connect_sm(struct xrdp_mm *self)
                 if (self->use_chansrv)
                 {
                     char portbuff[XRDP_SOCKETS_MAXPATH];
-
-                    xrdp_wm_log_msg(self->wm, LOG_LEVEL_INFO,
-                                    "Connecting to chansrv");
                     if (self->use_sesman)
                     {
                         g_snprintf(portbuff, sizeof(portbuff),
                                    XRDP_CHANSRV_STR, self->uid, self->display);
+                        xrdp_wm_log_msg(self->wm, LOG_LEVEL_INFO,
+                                        "Connecting to chansrv");
                     }
                     else
                     {
                         const char *cp = xrdp_mm_get_value(self, "chansrvport");
-                        portbuff[0] = '\0';
-                        parse_chansrvport(cp, portbuff, sizeof(portbuff),
-                                          self->uid);
-
+                        if (parse_chansrvport(cp, portbuff, sizeof(portbuff),
+                                              self->uid) == 0)
+                        {
+                            xrdp_wm_log_msg(self->wm, LOG_LEVEL_INFO,
+                                            "Connecting to chansrv on %s",
+                                            portbuff);
+                        }
+                        else
+                        {
+                            // An error has already been logged
+                            portbuff[0] = '\0';
+                        }
                     }
-                    xrdp_mm_update_allowed_channels(self);
-                    xrdp_mm_chansrv_connect(self, portbuff);
+
+                    if (portbuff[0] != '\0')
+                    {
+                        xrdp_mm_update_allowed_channels(self);
+                        xrdp_mm_chansrv_connect(self, portbuff);
+                    }
                 }
             }
             break;
@@ -3329,7 +3588,7 @@ xrdp_mm_get_wait_objs(struct xrdp_mm *self,
         read_objs[(*rcount)++] = self->encoder->xrdp_encoder_event_processed;
     }
 
-    if (self->resize_queue != 0)
+    if (self->resize_queue != 0 && self->resize_ready != NULL_WAIT_OBJ)
     {
         read_objs[(*rcount)++] = self->resize_ready;
     }
@@ -3516,7 +3775,7 @@ xrdp_mm_process_enc_done(struct xrdp_mm *self)
                     self->encoder->frame_id_server = enc_done->frame_id;
                     xrdp_mm_update_module_frame_ack(self);
                 }
-                else
+                else if (self->mod != NULL)
                 {
                     self->mod->mod_frame_ack(self->mod, 0,
                                              enc_done->frame_id);
@@ -3765,22 +4024,30 @@ xrdp_mm_frame_ack(struct xrdp_mm *self, int frame_id)
     {
         return 1;
     }
-    encoder = self->encoder;
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_mm_frame_ack: "
-              "incoming %d, client %d, server %d", frame_id,
-              encoder->frame_id_client, encoder->frame_id_server);
-    if ((frame_id < 0) || (frame_id > encoder->frame_id_server))
+    if ((encoder = self->encoder) == NULL)
     {
-        /* if frame_id is negative or bigger then what server last sent
-           just ack all sent frames */
-        /* some clients can send big number just to clear all
-           pending frames */
-        encoder->frame_id_client = encoder->frame_id_server;
+        /* No encoder - Possibly a late frame ack with a resize in progress */
+        LOG_DEVEL(LOG_LEVEL_INFO, "xrdp_mm_frame_ack: "
+                  "Frame ack incoming %d with no encoder!", frame_id);
     }
     else
     {
-        /* frame acks can come out of order so ignore older one */
-        encoder->frame_id_client = MAX(frame_id, encoder->frame_id_client);
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "xrdp_mm_frame_ack: "
+                  "incoming %d, client %d, server %d", frame_id,
+                  encoder->frame_id_client, encoder->frame_id_server);
+        if ((frame_id < 0) || (frame_id > encoder->frame_id_server))
+        {
+            /* if frame_id is negative or bigger then what server last sent
+               just ack all sent frames */
+            /* some clients can send big number just to clear all
+               pending frames */
+            encoder->frame_id_client = encoder->frame_id_server;
+        }
+        else
+        {
+            /* frame acks can come out of order so ignore older one */
+            encoder->frame_id_client = MAX(frame_id, encoder->frame_id_client);
+        }
     }
     xrdp_mm_update_module_frame_ack(self);
     return 0;
@@ -4483,7 +4750,7 @@ client_monitor_resize(struct xrdp_mod *mod, int width, int height,
 {
     int error = 0;
     struct xrdp_wm *wm;
-    struct display_size_description *display_size_data;
+    struct display_size_description description;
 
     LOG_DEVEL(LOG_LEVEL_TRACE, "client_monitor_resize:");
     wm = (struct xrdp_wm *)(mod->wm);
@@ -4506,25 +4773,23 @@ client_monitor_resize(struct xrdp_mod *mod, int width, int height,
         return 1;
     }
 
-    display_size_data = g_new0(struct display_size_description, 1);
-    if (display_size_data == NULL)
-    {
-        LOG(LOG_LEVEL_ERROR, "client_monitor_resize: Out of memory");
-        return 1;
-    }
     error = libxrdp_init_display_size_description(num_monitors,
             monitors,
-            display_size_data);
+            &description);
     if (error)
     {
         LOG(LOG_LEVEL_ERROR, "client_monitor_resize:"
             " libxrdp_init_display_size_description"
             " failed with error %d.", error);
-        free(display_size_data);
         return error;
     }
-    list_add_item(wm->mm->resize_queue, (tintptr)display_size_data);
-    g_set_wait_obj(wm->mm->resize_ready);
+    error = add_resize_request_to_queue(wm->mm, RQ_FROM_SERVER, &description);
+    if (error)
+    {
+        LOG(LOG_LEVEL_ERROR, "client_monitor_resize:"
+            " out of memory adding queue item");
+        return error;
+    }
 
     return 0;
 }

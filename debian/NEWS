@@ -1,3 +1,10 @@
+xrdp (0.10.5-5) unstable; urgency=medium
+
+  Please refer to https://bugs.debian.org/1132570 to fix xrdp running
+  unprivileged, if you are affected.
+
+ -- Alex Myczko <tar@debian.org>  Mon, 13 Apr 2026 10:15:45 +0000
+
 xrdp (0.9.0~20160601+git703fedd-1) unstable; urgency=medium
 
   The default setup since version 0.9 is xorgxrdp, not X11rdp or VNC.

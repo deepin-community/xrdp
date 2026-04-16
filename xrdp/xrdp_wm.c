@@ -47,11 +47,12 @@ xrdp_wm_load_channel_config(struct xrdp_wm *self)
 
         for (chan_id = 0 ; chan_id < chan_count ; ++chan_id)
         {
-            char chan_name[16];
+            char chan_name[CHANNEL_NAME_LEN + 1];
             if (libxrdp_query_channel(self->session, chan_id, chan_name,
                                       NULL) == 0)
             {
                 int disabled = 1; /* Channels disabled if not found */
+                int found = 0;
                 int index;
 
                 for (index = 0; index < names->count; index++)
@@ -60,9 +61,17 @@ xrdp_wm_load_channel_config(struct xrdp_wm *self)
                     const char *r = (const char *)list_get_item(values, index);
                     if (g_strcasecmp(q, chan_name) == 0)
                     {
+                        found = 1;
                         disabled = !g_text2bool(r);
                         break;
                     }
+                }
+                if (!found)
+                {
+                    LOG(LOG_LEVEL_WARNING,
+                        "Static channel '%s' from the client"
+                        " is not named in the [Channels] section",
+                        chan_name);
                 }
                 disabled_str = (disabled) ? "disabled" : "enabled";
                 LOG(LOG_LEVEL_DEBUG, "xrdp_wm_load_channel_config: "
@@ -114,8 +123,9 @@ xrdp_wm_create(struct xrdp_process *owner,
     self->target_surface = self->screen;
     self->current_surface_index = 0xffff; /* screen */
 
-    /* to store configuration from xrdp.ini */
+    /* to store configuration from xrdp.ini, gfx.toml */
     self->xrdp_config = g_new0(struct xrdp_config, 1);
+    self->gfx_config = g_new0(struct xrdp_tconfig_gfx, 1);
 
     /* Load the channel config so libxrdp can check whether
        drdynvc is enabled or not */
@@ -160,6 +170,11 @@ xrdp_wm_delete(struct xrdp_wm *self)
     if (self->xrdp_config)
     {
         g_free(self->xrdp_config);
+    }
+
+    if (self->gfx_config)
+    {
+        g_free(self->gfx_config);
     }
 
     /* free self */
@@ -641,6 +656,8 @@ xrdp_wm_init(struct xrdp_wm *self)
 
     load_xrdp_config(self->xrdp_config, self->session->xrdp_ini,
                      self->screen->bpp);
+
+    tconfig_load_gfx(XRDP_CFG_PATH "/gfx.toml", self->gfx_config);
 
     /* Remove a font loaded on the previous config */
     xrdp_font_delete(self->default_font);
@@ -1252,7 +1269,7 @@ xrdp_wm_clear_popup(struct xrdp_wm *self)
     //struct xrdp_bitmap* b;
 
     //b = 0;
-    if (self->popup_wnd != 0)
+    if (self->popup_wnd != NULL)
     {
         //b = self->popup_wnd->popped_from;
         i = list_index_of(self->screen->child_list, (long)self->popup_wnd);
@@ -1261,6 +1278,7 @@ xrdp_wm_clear_popup(struct xrdp_wm *self)
                  self->popup_wnd->width, self->popup_wnd->height);
         xrdp_bitmap_invalidate(self->screen, &rect);
         xrdp_bitmap_delete(self->popup_wnd);
+        self->popup_wnd = NULL;
     }
 
     //xrdp_wm_set_focused(self, b->parent);
@@ -2050,6 +2068,7 @@ callback(intptr_t id, int msg, intptr_t param1, intptr_t param2,
             xrdp_mm_suppress_output(wm->mm, param1,
                                     LOWORD(param2), HIWORD(param2),
                                     LOWORD(param3), HIWORD(param3));
+            break;
         case 0x555a:
             // "yeah, up_and_running"
             xrdp_mm_up_and_running(wm->mm);

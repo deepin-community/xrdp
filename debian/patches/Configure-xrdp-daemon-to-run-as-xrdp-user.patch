@@ -1,0 +1,38 @@
+From: Arnaud Rebillout <arnaudr@kali.org>
+Date: Fri, 3 Apr 2026 11:37:37 +0700
+Subject: Configure xrdp daemon to run as xrdp user
+
+Forwarded: not-needed, Debian-specific
+---
+ sesman/sesman.ini.in | 2 +-
+ xrdp/xrdp.ini.in     | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/sesman/sesman.ini.in b/sesman/sesman.ini.in
+index e1a2d35..cc2f9b7 100644
+--- a/sesman/sesman.ini.in
++++ b/sesman/sesman.ini.in
+@@ -57,7 +57,7 @@ RestrictInboundClipboard=none
+ ; local sockets for the session are created.
+ ; This MUST be the same as runtime_group in xrdp.ini, or xrdp will not
+ ; be able to connect to your sessions.
+-#SessionSockdirGroup=xrdp
++SessionSockdirGroup=xrdp
+ 
+ 
+ [Sessions]
+diff --git a/xrdp/xrdp.ini.in b/xrdp/xrdp.ini.in
+index 3645d76..8e60e5c 100644
+--- a/xrdp/xrdp.ini.in
++++ b/xrdp/xrdp.ini.in
+@@ -29,8 +29,8 @@ port=3389
+ ; Unprivileged User name and group to run the xrdp daemon.
+ ; It is HIGHLY RECOMMENDED you set these values. See the xrdp.ini(5)
+ ; manpage for more information on setting and checking these.
+-#runtime_user=xrdp
+-#runtime_group=xrdp
++runtime_user=xrdp
++runtime_group=xrdp
+ 
+ ; regulate if the listening socket use socket option tcp_nodelay
+ ; no buffering will be performed in the TCP stack
