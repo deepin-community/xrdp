@@ -4,18 +4,19 @@ EXTRA_DIST = \
   wave-format-server.txt
 
 AM_CPPFLAGS = \
-  -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
+  -DXRDP_CFG_PATH=\"${sysconfdir}/${sysconfsubdir}\" \
   -DXRDP_SBIN_PATH=\"${sbindir}\" \
   -DXRDP_SHARE_PATH=\"${datadir}/xrdp\" \
   -DXRDP_PID_PATH=\"${localstatedir}/run\" \
   -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
   -I$(top_srcdir)/sesman/libsesman \
-  -I$(top_srcdir)/common
+  -I$(top_srcdir)/common \
+  -I$(top_srcdir)/libipm
 
 CHANSRV_EXTRA_LIBS =
 
 if XRDP_FUSE
-AM_CPPFLAGS += -DXRDP_FUSE $(FUSE_CFLAGS) -DFUSE_USE_VERSION=26
+AM_CPPFLAGS += -DXRDP_FUSE $(FUSE_CFLAGS) -DFUSE_USE_VERSION=30
 CHANSRV_EXTRA_LIBS += $(FUSE_LIBS)
 endif
 

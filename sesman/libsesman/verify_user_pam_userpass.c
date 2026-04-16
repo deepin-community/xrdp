@@ -69,7 +69,6 @@ common_pam_login(struct auth_info *auth_info,
                  int need_pam_authenticate)
 {
     int perror;
-    char service_name[256];
 
     perror = pam_start(SERVICE, auth_info->userpass.user,
                        &(auth_info->pamc), &(auth_info->ph));
@@ -92,7 +91,7 @@ common_pam_login(struct auth_info *auth_info,
         }
     }
 
-    perror = pam_set_item(auth_info->ph, PAM_TTY, service_name);
+    perror = pam_set_item(auth_info->ph, PAM_TTY, SERVICE);
     if (perror != PAM_SUCCESS)
     {
         LOG(LOG_LEVEL_ERROR, "pam_set_item(PAM_TTY) failed: %s",
@@ -338,12 +337,12 @@ auth_set_env(struct auth_info *auth_info)
             for (pam_env = pam_envlist; *pam_env != NULL; ++pam_env)
             {
                 char *str = *pam_env;
-                int eq_pos = g_pos(str, "=");
+                char *eq_pos = strchr(str, '=');
 
-                if (eq_pos > 0)
+                if (eq_pos != NULL)
                 {
-                    str[eq_pos] = '\0';
-                    g_setenv(str, str + eq_pos + 1, 1);
+                    *eq_pos = '\0';
+                    g_setenv_log(str, eq_pos + 1, 1);
                 }
 
                 g_free(str);

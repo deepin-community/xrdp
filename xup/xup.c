@@ -170,6 +170,22 @@ lib_mod_connect(struct mod *mod)
         return 1;
     }
 
+
+    // This is a good place to finalise any parameters that need to
+    // be set.
+    if (mod->client_info.h264_frame_interval <= 0)
+    {
+        mod->client_info.h264_frame_interval = DEFAULT_H264_FRAME_INTERVAL;
+    }
+    if (mod->client_info.rfx_frame_interval <= 0)
+    {
+        mod->client_info.rfx_frame_interval = DEFAULT_RFX_FRAME_INTERVAL;
+    }
+    if (mod->client_info.normal_frame_interval <= 0)
+    {
+        mod->client_info.normal_frame_interval = DEFAULT_NORMAL_FRAME_INTERVAL;
+    }
+
     make_stream(s);
     g_sprintf(con_port, "%s", mod->port);
 
@@ -212,7 +228,8 @@ lib_mod_connect(struct mod *mod)
     }
     else
     {
-        mod->server_msg(mod, "connection problem, giving up", 0);
+        LOG(LOG_LEVEL_ERROR, "Error connecting to X server [%s]",
+            g_get_strerror());
         error = 1;
     }
 
@@ -238,8 +255,7 @@ lib_mod_connect(struct mod *mod)
     {
         trans_delete(mod->trans);
         mod->trans = 0;
-        mod->server_msg(mod, "some problem", 0);
-        return 1;
+        mod->server_msg(mod, "Error connecting to Xorg - check log", 0);
     }
     else
     {
@@ -252,7 +268,7 @@ lib_mod_connect(struct mod *mod)
     }
 
     LOG_DEVEL(LOG_LEVEL_TRACE, "out lib_mod_connect");
-    return 0;
+    return error;
 }
 
 /******************************************************************************/
@@ -1854,6 +1870,18 @@ lib_mod_set_param(struct mod *mod, const char *name, const char *value)
     else if (g_strcasecmp(name, "port") == 0)
     {
         g_strncpy(mod->port, value, 255);
+    }
+    else if (g_strcasecmp(name, "h264_frame_interval") == 0)
+    {
+        mod->client_info.h264_frame_interval = g_atoi(value);
+    }
+    else if (g_strcasecmp(name, "rfx_frame_interval") == 0)
+    {
+        mod->client_info.rfx_frame_interval = g_atoi(value);
+    }
+    else if (g_strcasecmp(name, "normal_frame_interval") == 0)
+    {
+        mod->client_info.normal_frame_interval = g_atoi(value);
     }
     else if (g_strcasecmp(name, "client_info") == 0)
     {

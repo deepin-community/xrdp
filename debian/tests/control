@@ -1,0 +1,2 @@
+Tests: check-privileges
+Restrictions: isolation-container, needs-root

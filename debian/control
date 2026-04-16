@@ -6,12 +6,12 @@ Uploaders:
  Thorsten Glaser <tg@mirbsd.de>,
  Alex Myczko <tar@debian.org>,
 Section: net
-Priority: optional
 Build-Depends:
  autoconf,
  automake,
  check,
  debhelper-compat (= 12),
+ libfuse3-dev [!hurd-any],
  libjpeg-dev,
  libcmocka-dev,
  libopus-dev,
@@ -21,13 +21,12 @@ Build-Depends:
  libx11-dev,
  libxfixes-dev,
  libxrandr-dev,
- nasm [amd64 hurd-i386 i386 kfreebsd-amd64 kfreebsd-i386],
+ nasm [amd64 hurd-i386 i386],
  openssl,
  pkgconf,
  systemd-dev [linux-any],
 Homepage: https://www.xrdp.org/
-Standards-Version: 4.7.0
-Rules-Requires-Root: no
+Standards-Version: 4.7.4
 Vcs-Browser: https://salsa.debian.org/debian-remote-team/xrdp
 Vcs-Git: https://salsa.debian.org/debian-remote-team/xrdp.git
 
@@ -42,6 +41,8 @@ Depends:
  ${shlibs:Depends},
 Recommends:
  xorgxrdp,
+Suggests:
+ guacamole,
 Description: Remote Desktop Protocol (RDP) server
  xrdp offers a graphical login to a remote client using
  RDP (the Remote Desktop Protocol). xrdp can connect to

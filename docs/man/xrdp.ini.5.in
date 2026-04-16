@@ -24,6 +24,25 @@ All options and values (except for file names and paths) are case insensitive, a
 The options to be specified in the \fB[Globals]\fR section are the following:
 
 .TP
+\fBport\fR=\fIport_specification [ port_specification ... ]\fR
+Specify the port(s) that xrdp should listen on. More instructions and
+examples can be found within xrdp.ini itself.
+
+.TP
+\fBvmconnect\fR=\fI[true|false]\fR
+(Hyper-V VMs only). Enables a wider support of security protocols when a
+virtual machine running xrdp is hosted on Hyper-V, and the user connects
+to it via the vmms service on TCP port 2179. In this configuration,
+RDP security is handled by the vmms service, and security features which
+are not yet added to xrdp itself can be supported.
+
+This parameter is required in environments which do not support 'classic'
+RDP encryption.
+
+The parameter is ignored for connections which are not made to the
+virtual machine over the vsock transport.
+
+.TP
 \fBautorun\fP=\fIsession_name\fP
 Section name for automatic login. If set and the client supplies valid
 username and password, the user will be logged in automatically using the
@@ -50,9 +69,22 @@ If set to \fB1\fR, \fBtrue\fR or \fByes\fR this option enables compression of bu
 .TP
 \fBkey_file\fP=\fI/path/to/private_key\fP
 Set location of TLS certificate and private key. They must be written in PEM format.
-If not specified, defaults to \fB@sysconfdir@/xrdp/cert.pem\fP, \fB@sysconfdir@/xrdp/key.pem\fP.
+If not specified, defaults to \fB@sysconfdir@/@sysconfsubdir@/cert.pem\fP, \fB@sysconfdir@/@sysconfsubdir@/key.pem\fP.
 
 This parameter is effective only if \fBsecurity_layer\fP is set to \fBtls\fP or \fBnegotiate\fP.
+
+.TP
+\fBtls_pms_log_file\fR=\fI<path-to-log-file>\fR
+Logs TLS pre-master secrets to the specified file. This allows packet capture
+tools (e.g. Wireshark) to decrypt captured PDUs.
+
+The file must be writeable by xrdp and readable by the packet capture tool.
+A good way to achive this is to create a temporary directory with
+permissions 2750 owned by the user running xrdp, and in the group used by
+the packet sniffer.
+
+SETTING THIS OPTION IS A SECURITY RISK. ONLY SET THIS OPTION FOR DEBUGGING
+COMMUNICATIONS BETWEEN XRDP AND A CLIENT.
 
 .TP
 \fBchannel_code\fP=\fI[true|false]\fP
@@ -118,6 +150,29 @@ Specifying only the port means that xrdp will listen on all interfaces.
 The default port for RDP is \fB3389\fP.
 Multiple address:port instances must be separated by spaces or commas. Check the .ini file for examples.
 Specifying interfaces requires said interfaces to be UP before xrdp starts.
+
+.TP
+\fBruntime_user\fP=\fIusername\fP
+.TP
+\fBruntime_group\fP=\fIgroupname\fP
+User name and group to run the xrdp daemon under.
+
+After xrdp starts, it sets its UID and GID to values derived from these
+settings, so that it's running without system privilege.
+
+The \fBruntime_group\fP MUST be set to the same value as
+\fBSessionSockdirGroup\fP in \fBsesman.ini\fP if you want to run sessions.
+
+A suitable user and group can be added with a command like this (Linux):-
+
+useradd xrdp -d / -c 'xrdp daemon' -s /usr/sbin/nologin
+
+In order to establish secure connections, the xrdp daemon needs permission
+to access sensitive cryptographic files. After changing either or both
+of these values, check that xrdp has access to required files by running
+this script:-
+
+@xrdpdatadir@/xrdp-chkpriv
 
 .TP
 \fBenable_token_login\fP=\fI[true|false]\fP
@@ -354,18 +409,34 @@ values supported for a particular release of \fBxrdp\fR(8) are documented in
 
 .TP
 \fBcode\fR=\fI<number>\fR|\fI0\fR
-Specifies the session type. The default, \fI0\fR, is Xvnc,
+Specifies the session type. \fI0\fR is Xvnc over TCP,
+\fI1\fR is Xvnc over a UNIX domain socket,
 and \fI20\fR is Xorg with xorgxrdp modules.
-
+The default is \fI0\fR on non-FIPS systems, and \fI1\fR on FIPS systems.
 .TP
-\fBchansrvport\fR=\fBDISPLAY(\fR\fIn\fR\fB)\fR|\fI/path/to/domain-socket\fR
+\fBchansrvport\fR=\fBDISPLAY(\fR\fIn\fR\fB)\fR|\fBDISPLAY(\fR\fIn,u\fR\fB)\fR||\fI/path/to/domain-socket\fR
 Asks xrdp to connect to a manually started \fBxrdp-chansrv\fR instance.
 This can be useful if you wish to use to use xrdp to connect to a VNC session
 which has been started other than by \fBxrdp-sesman\fR, as you can then make
 use of \fBxrdp\-chansrv\fR facilities in the VNC session.
 
-The first form of this setting is recommended, replacing \fIn\fR with the
-X11 display number of the session.
+Either the first or second form of this setting is recommended. Replace
+\fIn\fR with the X11 display number of the session, and (if applicable)
+\fIu\fR with the numeric ID of the session. The second form is only
+required if \fBxrdp\fR is unable to determine the session uid from the
+other values in the connection block.
+
+.TP
+\fBh264_frame_interval\fR=\fI<integer>\fR
+[Xorg only] Specify frame capture interval for H.264 captures in milliseconds.
+
+.TP
+\fBrfx_frame_interval\fR=\fI<integer>\fR
+[Xorg only] Specify frame capture interval for RemoteFX captures in milliseconds.
+
+.TP
+\fBnormal_frame_interval\fR=\fI<integer>\fR
+[Xorg only] Specify frame capture interval for normal captures in milliseconds.
 
 .SH "EXAMPLES"
 This is an example \fBxrdp.ini\fR:
@@ -383,6 +454,9 @@ password=ask
 ip=127.0.0.1
 port=-1
 code=20
+h264_frame_interval=16
+rfx_frame_interval=32
+normal_frame_interval=40
 
 [vnc-any]
 name=vnc-any
@@ -394,7 +468,7 @@ password={base64}cGFzc3dvcmQhCg==
 .fi
 
 .SH "FILES"
-@sysconfdir@/xrdp/xrdp.ini
+@sysconfdir@/@sysconfsubdir@/xrdp.ini
 
 .SH "SEE ALSO"
 .BR xrdp (8),

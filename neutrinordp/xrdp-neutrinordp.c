@@ -1790,14 +1790,18 @@ lfreerdp_synchronize(rdpContext *context)
 static boolean
 lfreerdp_pre_connect(freerdp *instance)
 {
+#define MAX_FREERDP_CHANNELS \
+    (sizeof(instance->settings->channels) / \
+     sizeof(instance->settings->channels[0]))
+
     struct mod *mod;
     int index;
     int error;
     int num_chans;
     int target_chan;
     int ch_flags;
-    char ch_name[256];
-    const char *ch_names[MAX_STATIC_CHANNELS];
+    char ch_name[CHANNEL_NAME_LEN + 1];
+    const char *ch_names[MAX_FREERDP_CHANNELS];
     char *dst_ch_name;
 
     LOG_DEVEL(LOG_LEVEL_INFO, "lfreerdp_pre_connect:");
@@ -1828,7 +1832,7 @@ lfreerdp_pre_connect(freerdp *instance)
                 LOG(LOG_LEVEL_INFO, "Channel '%s' not passed to module",
                     ch_name);
             }
-            else if (target_chan < MAX_STATIC_CHANNELS)
+            else if (target_chan < MAX_FREERDP_CHANNELS)
             {
                 dst_ch_name = instance->settings->channels[target_chan].name;
                 ch_names[target_chan] = dst_ch_name;

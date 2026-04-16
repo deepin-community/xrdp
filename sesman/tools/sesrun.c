@@ -40,7 +40,8 @@
 #include "string_calls.h"
 #include "guid.h"
 
-#include "tools_common.h"
+#include "scp.h"
+#include "scp_sync.h"
 
 // cppcheck doesn't always set this macro to something in double-quotes
 #if defined(__cppcheck__)
@@ -82,6 +83,7 @@ static struct
 } type_map[] =
 {
     { "Xvnc", SCP_SESSION_TYPE_XVNC},
+    { "Xvnc-UDS", SCP_SESSION_TYPE_XVNC_UDS},
     { "Xorg", SCP_SESSION_TYPE_XORG},
     { NULL, (enum scp_session_type) - 1}
 };
@@ -453,7 +455,7 @@ handle_login_response(struct trans *t, int *server_closed)
 {
     enum scp_login_status login_result;
 
-    int rv = wait_for_sesman_reply(t, E_SCP_LOGIN_RESPONSE);
+    int rv = scp_sync_wait_specific(t, E_SCP_LOGIN_RESPONSE);
     if (rv != 0)
     {
         *server_closed = 1;
@@ -511,7 +513,7 @@ handle_create_session_response(struct trans *t)
     int display;
     struct guid guid;
 
-    int rv = wait_for_sesman_reply(t, E_SCP_CREATE_SESSION_RESPONSE);
+    int rv = scp_sync_wait_specific(t, E_SCP_CREATE_SESSION_RESPONSE);
     if (rv == 0)
     {
         rv = scp_get_create_session_response(t, &status,

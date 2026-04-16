@@ -40,10 +40,12 @@
 #include "chansrv_config.h"
 #include "xrdp_sockets.h"
 #include "audin.h"
+#include "channel_defs.h"
+
+#include "scp.h"
+#include "scp_sync.h"
 
 #include "ms-rdpbcgr.h"
-
-#define MAX_PATH 260
 
 static struct trans *g_lis_trans = 0;
 static struct trans *g_con_trans = 0;
@@ -105,6 +107,12 @@ struct xrdp_api_data
     int chan_flags;
     int chan_id;
 };
+
+// Session state passed to xrdpapi
+// Whenever a single member of this struct changes, the whole
+// block is sent to xrdpapi. This simplifies the interface, but
+// complicates xrdpapi somewhat
+static struct xrdp_chan_session_state g_session_state;
 
 struct timeout_obj
 {
@@ -337,6 +345,51 @@ send_rail_drawing_orders(char *data, int size)
 }
 
 /*****************************************************************************/
+/**
+ * Sends a session API state event to one listener
+ */
+static int
+xrdpapi_send_session_state_event_single(struct trans *t)
+{
+    struct stream *s = t->out_s;
+    init_stream(s, (int)sizeof(g_session_state));
+    out_uint8a(s, &g_session_state, sizeof(g_session_state));
+    s_mark_end(s);
+    return trans_write_copy(t);
+}
+
+/*****************************************************************************/
+/**
+ * Sends a session API state event to all listeners (if any)
+ *
+ * This should be called after updating g_session_state. The xrdpapi
+ * module will generate any appropriate 'windows' events from the message
+ */
+static void
+xrdpapi_send_session_state_event_all(void)
+{
+    int index;
+    struct trans *ltran;
+    struct xrdp_api_data *api_data;
+
+    for (index = 0; index < g_api_con_trans_list->count; index++)
+    {
+        ltran = (struct trans *) list_get_item(g_api_con_trans_list, index);
+        if (ltran != NULL)
+        {
+            api_data = (struct xrdp_api_data *) (ltran->callback_data);
+            if (api_data != NULL)
+            {
+                if (api_data->chan_id == CHAN_ID_XRDP_SESSION_INFO)
+                {
+                    (void)xrdpapi_send_session_state_event_single(ltran);
+                }
+            }
+        }
+    }
+}
+
+/*****************************************************************************/
 /* returns error */
 static int
 process_message_channel_setup(struct stream *s)
@@ -364,7 +417,7 @@ process_message_channel_setup(struct stream *s)
     {
         ci = &(g_chan_items[g_num_chan_items]);
         g_memset(ci->name, 0, sizeof(ci->name));
-        in_uint8a(s, ci->name, 8);
+        in_uint8a(s, ci->name, CHANNEL_NAME_LEN + 1);
         in_uint16_le(s, ci->id);
         in_uint16_le(s, ci->flags);
         LOG_DEVEL(LOG_LEVEL_DEBUG, "process_message_channel_setup: chan name '%s' "
@@ -963,7 +1016,7 @@ my_api_open_response(int chan_id, int creation_status)
     {
         return 1;
     }
-    out_uint32_le(s, creation_status);
+    out_uint32_pe(s, creation_status);
     s_mark_end(s);
     if (trans_write_copy(trans) != 0)
     {
@@ -1035,26 +1088,112 @@ my_api_data(int chan_id, char *data, int bytes)
 }
 
 /*
- * called when WTSVirtualChannelWrite() is invoked in xrdpapi.c
+ * Handles an incoming channel connect request on an xrdpapi channel
+ *
+ ******************************************************************************/
+static int
+handle_xrdpapi_connection_request(struct trans *trans)
+{
+    struct xrdp_api_data *ad = (struct xrdp_api_data *)(trans->callback_data);
+    struct stream *s = trans_get_in_s(trans);
+    int rv = 1; // Assume failure
+    struct xrdp_chan_connect connect_data;
+
+    in_uint8a(s, &connect_data, sizeof(connect_data));
+    connect_data.name[MAX_DVC_NAME_LEN] = '\0';
+    //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: chan_name %s chan_flags 0x%8.8x", connect_data.name, connect_data.flags);
+    if (connect_data.version != XRDPAPI_CONNECT_PDU_VERSION)
+    {
+        return 1;
+    }
+    ad->chan_flags = connect_data.flags;
+
+    if (connect_data.flags == 0 || connect_data.private_chan != 0)
+    {
+        /* SVC (or private) */
+        if (connect_data.private_chan >= CHAN_ID_XRDP_BASE &&
+                connect_data.private_chan < CHAN_ID_XRDP_MAX)
+        {
+            /* Valid private channel */
+            ad->chan_id = connect_data.private_chan;
+            ad->chan_flags = 0;
+            rv = 0;
+        }
+        else if (connect_data.private_chan == 0)
+        {
+            /* Check SVC names */
+            int index;
+            for (index = 0; index < g_num_chan_items; index++)
+            {
+                if (g_strcasecmp(g_chan_items[index].name,
+                                 connect_data.name) == 0)
+                {
+                    ad->chan_id = g_chan_items[index].id;
+                    rv = 0;
+                    break;
+                }
+            }
+        }
+
+        /* Send the status back to the caller */
+        struct stream *out_s = trans_get_out_s(trans, 8192);
+        if (out_s == NULL)
+        {
+            return 1;
+        }
+        out_uint32_pe(out_s, rv);
+        s_mark_end(out_s);
+        if (trans_write_copy(trans) != 0)
+        {
+            return 1;
+        }
+
+        /* Channel-specific processing */
+        if (rv == 0 && connect_data.private_chan != 0)
+        {
+            switch (connect_data.private_chan)
+            {
+                case CHAN_ID_XRDP_SESSION_INFO:
+                {
+                    rv = xrdpapi_send_session_state_event_single(trans);
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+    else
+    {
+        /* DVS */
+        struct chansrv_drdynvc_procs procs;
+        g_memset(&procs, 0, sizeof(procs));
+        procs.open_response = my_api_open_response;
+        procs.close_response = my_api_close_response;
+        procs.data_first = my_api_data_first;
+        procs.data = my_api_data;
+        rv = chansrv_drdynvc_open(connect_data.name, ad->chan_flags,
+                                  &procs, &(ad->chan_id));
+        //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: chansrv_drdynvc_open rv %d "
+        //          "chan_id %d", rv, ad->chan_id);
+        g_drdynvcs[ad->chan_id].xrdp_api_trans = trans;
+    }
+
+    return rv;
+}
+
+/*
+ * called when VirtualChannelOpen() is invoked in xrdpapi.c, and later,
+ * when the channel is written to
  *
  ******************************************************************************/
 int
 my_api_trans_data_in(struct trans *trans)
 {
     struct stream *s;
-    struct stream *out_s;
     struct xrdp_api_data *ad;
-    int index;
     int rv;
     int bytes;
-    int ver;
-    struct chansrv_drdynvc_procs procs;
-    /*
-     * Name is limited to CHANNEL_NAME_LEN for an SVC, or MAX_PATH
-     * bytes for a DVC
-     */
-    char chan_name[MAX(CHANNEL_NAME_LEN, MAX_PATH) + 1];
-    unsigned int channel_name_bytes;
 
     //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: extra_flags %d", trans->extra_flags);
     rv = 0;
@@ -1062,89 +1201,15 @@ my_api_trans_data_in(struct trans *trans)
     s = trans_get_in_s(trans);
     if (trans->extra_flags == 0)
     {
-        in_uint32_le(s, bytes);
-        in_uint32_le(s, ver);
-        //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: bytes %d ver %d", bytes, ver);
-        if (ver != 0)
-        {
-            return 1;
-        }
-        trans->header_size = bytes;
+        trans->header_size = XRDPAPI_CONNECT_PDU_LEN; // Need more data
         trans->extra_flags = 1;
     }
     else if (trans->extra_flags == 1)
     {
-        rv = 1;
-        in_uint32_le(s, channel_name_bytes);
-        //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: channel_name_bytes %d", channel_name_bytes);
-        if (channel_name_bytes > (sizeof(chan_name) - 1))
-        {
-            return 1;
-        }
-        in_uint8a(s, chan_name, channel_name_bytes);
-        chan_name[channel_name_bytes] = '\0';
-
-        in_uint32_le(s, ad->chan_flags);
-        //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: chan_name %s chan_flags 0x%8.8x", chan_name, ad->chan_flags);
-        if (ad->chan_flags == 0)
-        {
-            /* SVC */
-            for (index = 0; index < g_num_chan_items; index++)
-            {
-                if (g_strcasecmp(g_chan_items[index].name, chan_name) == 0)
-                {
-                    ad->chan_id = g_chan_items[index].id;
-                    rv = 0;
-                    break;
-                }
-            }
-            if (rv == 0)
-            {
-                /* open ok */
-                out_s = trans_get_out_s(trans, 8192);
-                if (out_s == NULL)
-                {
-                    return 1;
-                }
-                out_uint32_le(out_s, 0);
-                s_mark_end(out_s);
-                if (trans_write_copy(trans) != 0)
-                {
-                    return 1;
-                }
-            }
-            else
-            {
-                /* open failed */
-                out_s = trans_get_out_s(trans, 8192);
-                if (out_s == NULL)
-                {
-                    return 1;
-                }
-                out_uint32_le(out_s, 1);
-                s_mark_end(out_s);
-                if (trans_write_copy(trans) != 0)
-                {
-                    return 1;
-                }
-            }
-        }
-        else
-        {
-            /* DVS */
-            g_memset(&procs, 0, sizeof(procs));
-            procs.open_response = my_api_open_response;
-            procs.close_response = my_api_close_response;
-            procs.data_first = my_api_data_first;
-            procs.data = my_api_data;
-            rv = chansrv_drdynvc_open(chan_name, ad->chan_flags,
-                                      &procs, &(ad->chan_id));
-            //LOG_DEVEL(LOG_LEVEL_DEBUG, "my_api_trans_data_in: chansrv_drdynvc_open rv %d "
-            //          "chan_id %d", rv, ad->chan_id);
-            g_drdynvcs[ad->chan_id].xrdp_api_trans = trans;
-        }
+        // We've got a complete connection request on the channel */
+        handle_xrdpapi_connection_request(trans);
         init_stream(s, 0);
-        trans->extra_flags = 2;
+        trans->extra_flags = 2; // Mark the connection phase as complete
         trans->header_size = 0;
     }
     else
@@ -1157,8 +1222,16 @@ my_api_trans_data_in(struct trans *trans)
         }
         if (ad->chan_flags == 0)
         {
-            /* SVC */
-            rv = send_channel_data(ad->chan_id, s->data, bytes);
+            if (ad->chan_id == CHAN_ID_XRDP_SESSION_INFO)
+            {
+                // Ignore data sent to this channel
+                rv = 0;
+            }
+            else
+            {
+                /* SVC */
+                rv = send_channel_data(ad->chan_id, s->data, bytes);
+            }
         }
         else
         {
@@ -1199,6 +1272,12 @@ my_trans_conn_in(struct trans *trans, struct trans *new_trans)
     g_con_trans = new_trans;
     g_con_trans->trans_data_in = my_trans_data_in;
     g_con_trans->header_size = 8;
+
+    /* Tell any xrdpapi listeners the session is connected. The
+     * previous state is guaranteed to be 'disconnected' at this point */
+    g_session_state.is_connected = 1;
+    xrdpapi_send_session_state_event_all();
+
     /* stop listening */
     trans_delete(g_lis_trans);
     g_lis_trans = 0;
@@ -1433,6 +1512,7 @@ channel_thread_loop(void *in_val)
                 {
                     LOG_DEVEL(LOG_LEVEL_INFO, "channel_thread_loop: "
                               "trans_check_wait_objs error resetting");
+
                     clipboard_deinit();
                     sound_deinit();
                     devredir_deinit();
@@ -1440,6 +1520,11 @@ channel_thread_loop(void *in_val)
                     /* delete g_con_trans */
                     trans_delete(g_con_trans);
                     g_con_trans = 0;
+                    /* Tell any xrdpapi listeners the session is
+                     * disconnected.  The previous state is guaranteed
+                     * to be 'connected' at this point */
+                    g_session_state.is_connected = 0;
+                    (void)xrdpapi_send_session_state_event_all();
                     /* create new listener */
                     error = setup_listen();
 
@@ -1490,6 +1575,12 @@ channel_thread_loop(void *in_val)
     g_lis_trans = 0;
     trans_delete(g_con_trans);
     g_con_trans = 0;
+    /* Tell any xrdpapi listeners the session is disconnected */
+    if (g_session_state.is_connected)
+    {
+        g_session_state.is_connected = 0;
+        (void)xrdpapi_send_session_state_event_all();
+    }
     trans_delete(g_api_lis_trans);
     g_api_lis_trans = 0;
     api_con_trans_list_remove_all();
@@ -1592,20 +1683,32 @@ get_log_path(char *path, int bytes)
     int rv;
 
     rv = 1;
-    log_path = g_getenv("CHANSRV_LOG_PATH");
-    if (log_path == 0)
+    if (g_cfg->log_file_path != NULL && g_cfg->log_file_path[0] != '\0')
     {
-        log_path = g_getenv("XDG_DATA_HOME");
-        if (log_path != 0)
+        char uidstr[64];
+        char username[64];
+        const struct info_string_tag map[] =
         {
-            g_snprintf(path, bytes, "%s%s", log_path, "/xrdp");
-            if (g_directory_exist(path) || (g_mkdir(path) == 0))
-            {
-                rv = 0;
-            }
+            {'u', uidstr},
+            {'U', username},
+            INFO_STRING_END_OF_LIST
+        };
+
+        int uid = g_getuid();
+        g_snprintf(uidstr, sizeof(uidstr), "%d", uid);
+        if (g_getlogin(username, sizeof(username)) != 0)
+        {
+            /* Fall back to UID */
+            g_strncpy(username, uidstr, sizeof(username) - 1);
+        }
+
+        (void)g_format_info_string(path, bytes, g_cfg->log_file_path, map);
+        if (g_directory_exist(path) || (g_mkdir(path) == 0))
+        {
+            rv = 0;
         }
     }
-    else
+    else if ((log_path = g_getenv("CHANSRV_LOG_PATH")) != 0)
     {
         g_snprintf(path, bytes, "%s", log_path);
         if (g_directory_exist(path) || (g_mkdir(path) == 0))
@@ -1613,6 +1716,16 @@ get_log_path(char *path, int bytes)
             rv = 0;
         }
     }
+    else if ((log_path = g_getenv("XDG_DATA_HOME")) != 0)
+    {
+        g_snprintf(path, bytes, "%s%s", log_path, "/xrdp");
+        if (g_directory_exist(path) || (g_mkdir(path) == 0))
+        {
+            rv = 0;
+        }
+    }
+
+    // Always fall back to the home directory
     if (rv != 0)
     {
         log_path = g_getenv("HOME");
@@ -1665,6 +1778,54 @@ run_exec(void)
 }
 
 /*****************************************************************************/
+/**
+ * Make sure XRDP_SOCKET_PATH exists
+ *
+ * We can't do anything without XRDP_SOCKET_PATH existing.
+ *
+ * Normally this is done by sesman before chansrv starts. If we're running
+ * standalone however (i.e. with x11vnc) this won't be done. We don't have the
+ * privilege to create the directory, so we have to ask sesman to do it
+ * for us.
+ */
+static int
+chansrv_create_xrdp_socket_path(void)
+{
+    char xrdp_socket_path[XRDP_SOCKETS_MAXPATH];
+    int rv = 1;
+
+    /* Use our UID to qualify XRDP_SOCKET_PATH */
+    g_snprintf(xrdp_socket_path, sizeof(xrdp_socket_path),
+               XRDP_SOCKET_PATH, g_getuid());
+
+    if (g_directory_exist(xrdp_socket_path))
+    {
+        rv = 0;
+    }
+    else
+    {
+        LOG(LOG_LEVEL_INFO, "%s doesn't exist - asking sesman to create it",
+            xrdp_socket_path);
+
+        struct trans *t = NULL;
+
+        if (!(t = scp_connect(g_cfg->listen_port, "xrdp-chansrv", g_is_term)))
+        {
+            LOG(LOG_LEVEL_ERROR, "Can't connect to sesman");
+        }
+        else if (scp_sync_uds_login_request(t) == 0 &&
+                 scp_sync_create_sockdir_request(t) == 0)
+        {
+            rv = 0;
+            (void)scp_send_close_connection_request(t);
+        }
+        trans_delete(t);
+    }
+
+    return rv;
+}
+
+/*****************************************************************************/
 int
 main(int argc, char **argv)
 {
@@ -1679,14 +1840,6 @@ main(int argc, char **argv)
     struct log_config *logconfig;
     g_init("xrdp-chansrv"); /* os_calls */
     g_memset(g_drdynvcs, 0, sizeof(g_drdynvcs));
-
-    log_path[255] = 0;
-    if (get_log_path(log_path, 255) != 0)
-    {
-        g_writeln("error reading CHANSRV_LOG_PATH and HOME environment variable");
-        main_cleanup();
-        return 1;
-    }
 
     display_text = g_getenv("DISPLAY");
     if (display_text == NULL)
@@ -1713,6 +1866,13 @@ main(int argc, char **argv)
         return 1;
     }
     config_dump(g_cfg);
+
+    if (get_log_path(log_path, sizeof(log_path)) != 0)
+    {
+        g_writeln("error reading CHANSRV_LOG_PATH and HOME environment variable");
+        main_cleanup();
+        return 1;
+    }
 
     pid = g_getpid();
 
@@ -1756,7 +1916,20 @@ main(int argc, char **argv)
     }
 
     LOG_DEVEL(LOG_LEVEL_INFO, "main: app started pid %d(0x%8.8x)", pid, pid);
-    /*  set up signal handler  */
+
+    if (chansrv_create_xrdp_socket_path() != 0)
+    {
+        main_cleanup();
+        return 1;
+    }
+
+    /*  set up signal objects  */
+    g_snprintf(text, sizeof(text), "xrdp_chansrv_%8.8x_main_term", pid);
+    g_term_event = g_create_wait_obj(text);
+    g_snprintf(text, sizeof(text), "xrdp_chansrv_%8.8x_sigchld", pid);
+    g_sigchld_event = g_create_wait_obj(text);
+
+    /*  set up signal handlers */
     g_signal_terminate(term_signal_handler); /* SIGTERM */
     g_signal_user_interrupt(term_signal_handler); /* SIGINT */
     g_signal_pipe(nil_signal_handler); /* SIGPIPE */
@@ -1767,18 +1940,17 @@ main(int argc, char **argv)
     xcommon_set_x_server_fatal_handler(x_server_fatal_handler);
 
     LOG_DEVEL(LOG_LEVEL_INFO, "main: DISPLAY env var set to %s", display_text);
-
     LOG_DEVEL(LOG_LEVEL_INFO, "main: using DISPLAY %d", g_display_num);
-    g_snprintf(text, 255, "xrdp_chansrv_%8.8x_main_term", pid);
-    g_term_event = g_create_wait_obj(text);
-    g_snprintf(text, 255, "xrdp_chansrv_%8.8x_sigchld", pid);
-    g_sigchld_event = g_create_wait_obj(text);
-    g_snprintf(text, 255, "xrdp_chansrv_%8.8x_thread_done", pid);
-    g_thread_done_event = g_create_wait_obj(text);
-    g_snprintf(text, 255, "xrdp_chansrv_%8.8x_exec", pid);
+
+    /* Set up RAIL sync objects */
+    g_snprintf(text, sizeof(text), "xrdp_chansrv_%8.8x_exec", pid);
     g_exec_event = g_create_wait_obj(text);
     g_exec_mutex = tc_mutex_create();
     g_exec_sem = tc_sem_create(0);
+
+    /* Set up the channel thread */
+    g_snprintf(text, sizeof(text), "xrdp_chansrv_%8.8x_thread_done", pid);
+    g_thread_done_event = g_create_wait_obj(text);
     tc_thread_create(channel_thread_loop, 0);
 
     while (g_term_event > 0 && !g_is_wait_obj_set(g_term_event))

@@ -23,16 +23,16 @@
 
 #include "arch.h"
 
-enum exit_reason
+enum proc_exit_reason
 {
-    E_XR_STATUS_CODE = 0, ///< 'val' contains exit status
-    E_XR_SIGNAL, ///< 'val' contains a signal number
-    E_XR_UNEXPECTED
+    E_PXR_STATUS_CODE = 0, ///< 'val' contains exit status
+    E_PXR_SIGNAL, ///< 'val' contains a signal number
+    E_PXR_UNEXPECTED
 };
 
-struct exit_status
+struct proc_exit_status
 {
-    enum exit_reason reason;
+    enum proc_exit_reason reason;
     int val;
 };
 
@@ -71,6 +71,14 @@ int      g_sck_set_send_buffer_bytes(int sck, int bytes);
 int      g_sck_get_send_buffer_bytes(int sck, int *bytes);
 int      g_sck_set_recv_buffer_bytes(int sck, int bytes);
 int      g_sck_get_recv_buffer_bytes(int sck, int *bytes);
+/**
+ * Set SO_REUSEADDR for a socket
+ *
+ * Use before binding, if appropriate.
+ * @param sck Socket
+ * @return 0 for success
+ */
+int      g_sck_set_reuseaddr(int sck);
 int      g_sck_local_socket(void);
 int      g_sck_local_socketpair(int sck[2]);
 int      g_sck_vsock_socket(void);
@@ -186,6 +194,11 @@ g_sck_get_peer_description(int sck,
 void     g_sleep(int msecs);
 int      g_pipe(int fd[2]);
 
+// Wait objects with this value are ignored by
+// g_set_wait_obj() / g_reset_wait_obj() / g_is_wait_obj_set() /
+// g_delete_wait_obj()
+#define NULL_WAIT_OBJ (tintptr)0
+
 tintptr  g_create_wait_obj(const char *name);
 tintptr  g_create_wait_obj_from_socket(tintptr socket, int write);
 void     g_delete_wait_obj_from_socket(tintptr wait_obj);
@@ -230,6 +243,7 @@ int      g_file_is_open(int fd);
 int      g_file_read(int fd, char *ptr, int len);
 int      g_file_write(int fd, const char *ptr, int len);
 int      g_file_seek(int fd, int offset);
+int      g_file_seek_end(int fd, int offset);
 int      g_file_lock(int fd, int start, int len);
 int
 g_file_map(int fd, int aread, int awrite, size_t length, void **addr);
@@ -338,6 +352,7 @@ void     g_signal_pipe(void (*func)(int));
 void     g_signal_usr1(void (*func)(int));
 int      g_fork(void);
 int      g_setgid(int pid);
+int      g_drop_privileges(const char *user, const char *group);
 int      g_initgroups(const char *user);
 int      g_getuid(void);
 int      g_getgid(void);
@@ -352,9 +367,9 @@ int      g_setlogin(const char *name);
  */
 int      g_set_allusercontext(int uid);
 #endif
-int      g_waitchild(struct exit_status *e);
+int      g_waitchild(struct proc_exit_status *e);
 int      g_waitpid(int pid);
-struct exit_status g_waitpid_status(int pid);
+struct proc_exit_status g_waitpid_status(int pid);
 /*
  * Sets the process group ID of the indicated process to the specified value.
  * (POSIX.1)
@@ -367,10 +382,27 @@ int      g_setpgid(int pid, int pgid);
 void     g_clearenv(void);
 int      g_setenv(const char *name, const char *value, int rewrite);
 char    *g_getenv(const char *name);
+/**
+ * Calls g_setenv(), logging failures
+ *
+ * @param name Name to set
+ * @param value String to set $name to
+ * @param rewrite Set to non-zero to allow rewriting of existing names
+ *
+ * Unlike g_setenv() this function returns no value. Use this function if the
+ * only reasonable thing to do on failure is to log it.
+ */
+void     g_setenv_log(const char *name, const char *value, int rewrite);
 int      g_exit(int exit_code);
 int      g_getpid(void);
 int      g_sigterm(int pid);
 int      g_sighup(int pid);
+/*
+ * Is a particular PID active?
+ * @param pid PID to check
+ * Returns boolean
+ */
+int      g_pid_is_active(int pid);
 int      g_getuser_info_by_name(const char *username, int *uid, int *gid,
                                 char **shell, char **dir, char **gecos);
 int      g_getuser_info_by_uid(int uid, char **username, int *gid,
@@ -400,6 +432,14 @@ int      g_tcp4_bind_address(int sck, const char *port, const char *address);
 int      g_tcp6_socket(void);
 int      g_tcp6_bind_address(int sck, const char *port, const char *address);
 int      g_no_new_privs(void);
+/**
+ * Query whether FIPS mode is enabled
+ *
+ * In FIPS mode, some cryptographic algorithms are disabled
+ *
+ * @return 1 -> FIPS mode enabled, 0 -> FIPS mode disabled or unknown
+ */
+int      g_fips_mode_enabled(void);
 void
 g_qsort(void *base, size_t nitems, size_t size,
         int (*compar)(const void *, const void *));

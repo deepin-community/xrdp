@@ -20,7 +20,13 @@
 #ifndef _CHANSRV_XFS
 #define _CHANSRV_XFS
 
-/* Skip this include if there's no FUSE */
+/* Maximum length of filename supported (in bytes).
+ * This is a sensible limit to a filename length. It is not used by
+ * this module to allocate long-lived storage, so it can be increased
+ * if necessary */
+#define XFS_MAXFILENAMELEN 1023
+
+/* Skip the rest of this include if there's no FUSE */
 #ifdef XRDP_FUSE
 
 #include <stddef.h>
@@ -29,14 +35,15 @@
 
 #include "arch.h"
 
-#define XFS_MAXFILENAMELEN 255
-
 /*
  * Incomplete types for the public interface
  */
 struct xfs_fs;
 struct xfs_dir_handle;
 
+/**
+ * Describe an inode in the XFS filesystem
+ */
 typedef struct xfs_inode
 {
     fuse_ino_t      inum;              /* File serial number.               */
@@ -47,7 +54,7 @@ typedef struct xfs_inode
     time_t          atime;             /* Time of last access.              */
     time_t          mtime;             /* Time of last modification.        */
     time_t          ctime;             /* Time of last status change.       */
-    char            name[XFS_MAXFILENAMELEN + 1]; /* Short name             */
+    char            *name;             /* Short name (dynamically allocated) */
     tui32           generation;        /* Changes if inode is reused        */
     char            is_redirected;     /* file is on redirected device      */
     tui32           device_id;         /* device ID of redirected device    */

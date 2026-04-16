@@ -240,7 +240,7 @@ Files: Makefile.am
  xup/*
  libipm/*
 Copyright:
- 2004-2024 Jay Sorg <jay.sorg@gmail.com>
+ 2004-2026 Jay Sorg <jay.sorg@gmail.com>
  2022 Matt Burt, all xrdp contributors
  2016 Emmanuel Blindauer
 License: Apache-2.0
@@ -537,7 +537,7 @@ License: Apache-2.0
 Files: debian/*
 Copyright: Dominik George <nik@naturalnet.de>
  Thorsten Glaser <tg@mirbsd.org>
- 2024 Alex Myczko <tar@debian.org>
+ 2024-2026 Alex Myczko <tar@debian.org>
 License: MirOS
 
 Files: debian/generate-keymap-rm-conffile.sh

@@ -38,6 +38,14 @@
 #include "xrdp_client_info.h"
 #include "log.h"
 
+#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_NVENC)
+#if !defined(XRDP_H264)
+#define XRDP_H264 1
+#endif
+#else
+#undef XRDP_H264
+#endif
+
 /* xrdp.c */
 long
 g_xrdp_sync(long (*sync_func)(long param1, long param2), long sync_param1,
@@ -194,13 +202,14 @@ xrdp_process_main_loop(struct xrdp_process *self);
 
 /* xrdp_listen.c */
 struct xrdp_listen *
-xrdp_listen_create(void);
+xrdp_listen_create(struct xrdp_startup_params *startup_params);
+int
+xrdp_listen_init(struct xrdp_listen *self);
 void
 xrdp_listen_delete(struct xrdp_listen *self);
 int
 xrdp_listen_main_loop(struct xrdp_listen *self);
-int
-xrdp_listen_test(struct xrdp_startup_params *startup_params);
+
 
 /* xrdp_region.c */
 struct xrdp_region *
@@ -474,6 +483,20 @@ struct display_control_monitor_layout_data
     /// This flag is set if the state machine needs to
     /// shutdown/startup EGFX
     int using_egfx;
+};
+
+enum resize_queue_source
+{
+    RQ_IGNORE_MARKER, // Ignore marker
+    RQ_FROM_SERVER, // Requested by display server / desktop
+    RQ_FROM_CLIENT  // Requested by client (dynamic monitor data)
+};
+
+// Items stored on the resize queue
+struct resize_queue_item
+{
+    enum resize_queue_source src; // Where the item came from
+    struct display_size_description description;
 };
 
 int

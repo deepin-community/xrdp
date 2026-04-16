@@ -127,6 +127,11 @@ void xfuse_devredir_cb_rename_file(struct state_rename *fip,
 void xfuse_devredir_cb_file_close(struct state_close *fip)
 {}
 
+void xfuse_devredir_cb_statfs(struct state_statfs *fip,
+                              const struct statvfs *fss,
+                              enum NTSTATUS IoStatus)
+{}
+
 int xfuse_path_in_xfuse_fs(const char *path)
 {
     return 0;
@@ -169,12 +174,51 @@ int xfuse_path_in_xfuse_fs(const char *path)
 #include "list.h"
 #include "file.h"
 
+/* Check for FUSE features we may wish to use
+ *
+ * Note that FUSE_VERSION might be more useful for some features than
+ * FUSE_USE_VERSION
+ */
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3,7)
+#define FUSE_SET_LOG_FUNC_AVAILABLE
+#endif
+
 #ifndef EREMOTEIO
 #define EREMOTEIO EIO
 #endif
 
 #define XFUSE_ATTR_TIMEOUT      5.0
 #define XFUSE_ENTRY_TIMEOUT     5.0
+
+
+extern struct config_chansrv *g_cfg; /* in chansrv.c */
+
+
+/* Local utility functions */
+
+static inline char *
+_fuse_mount_name_colon_char_replace(const char *dirname)
+{
+    char *newdirname = (char *) dirname;
+    if (g_cfg->fuse_mount_name_colon_char_replacement != ':')
+    {
+        newdirname = g_strdup(dirname);
+        if (newdirname == NULL)
+        {
+            LOG_DEVEL(LOG_LEVEL_ERROR,
+                      "Failed to duplicate fuse mount name string");
+            return (char *) dirname;
+        }
+        char *colonptr = g_strrchr(newdirname, ':');
+        if (colonptr != NULL)
+        {
+            *colonptr = g_cfg->fuse_mount_name_colon_char_replacement;
+        }
+    }
+    return newdirname;
+}
+
+/* End of Local utility functions*/
 
 
 /* Type of buffer used for fuse_add_direntry() calls */
@@ -294,6 +338,15 @@ struct state_close
     fuse_ino_t        inum;       /* inum of file to open               */
 };
 
+/*
+ * Record type used to maintain state when running a statfs
+ */
+struct state_statfs
+{
+    fuse_req_t        req;        /* Original FUSE request from statfs  */
+};
+
+
 struct xfuse_handle
 {
     tui32 DeviceId;
@@ -320,20 +373,18 @@ struct req_list_item
     int size;
 };
 
-extern struct config_chansrv *g_cfg; /* in chansrv.c */
 
 static struct list *g_req_list = 0;
 static struct xfs_fs *g_xfs;                 /* an inst of xrdp file system */
 static ino_t g_clipboard_inum;               /* inode of clipboard dir      */
-static char *g_mount_point = 0;              /* our FUSE mount point        */
 static struct fuse_lowlevel_ops g_xfuse_ops; /* setup FUSE callbacks        */
 static int g_xfuse_inited = 0;               /* true when FUSE is inited    */
-static struct fuse_chan *g_ch = 0;
 static struct fuse_session *g_se = 0;
-static char *g_buffer = 0;
-static int g_fd = 0;
-static tintptr g_bufsize = 0;
-
+// For the below, see the source for the fuse_session_loop() function
+static struct fuse_buf g_buffer =
+{
+    .mem = NULL
+};
 
 /* forward declarations for internal access */
 static int xfuse_init_xrdp_fs(void);
@@ -362,7 +413,8 @@ static void xfuse_cb_unlink(fuse_req_t req, fuse_ino_t parent,
 
 static void xfuse_cb_rename(fuse_req_t req,
                             fuse_ino_t old_parent, const char *old_name,
-                            fuse_ino_t new_parent, const char *new_name);
+                            fuse_ino_t new_parent, const char *new_name,
+                            unsigned int flags);
 
 /* Whether to create a dir of file depends on whether S_IFDIR is set in the
    mode field */
@@ -399,6 +451,8 @@ static void xfuse_cb_opendir(fuse_req_t req, fuse_ino_t ino,
 
 static void xfuse_cb_releasedir(fuse_req_t req, fuse_ino_t ino,
                                 struct fuse_file_info *fi);
+
+static void xfuse_cb_statfs(fuse_req_t req, fuse_ino_t ino);
 
 /* miscellaneous functions */
 static void xfs_inode_to_fuse_entry_param(const XFS_INODE *xinode,
@@ -496,9 +550,9 @@ xfuse_init(void)
         return 1;
     }
 
-    if (g_ch != 0)
+    if (g_se != 0)
     {
-        LOG_DEVEL(LOG_LEVEL_ERROR, "g_ch is not zero");
+        LOG_DEVEL(LOG_LEVEL_ERROR, "g_se is not zero");
         return -1;
     }
 
@@ -602,17 +656,21 @@ xfuse_init(void)
     g_xfuse_ops.setattr     = xfuse_cb_setattr;
     g_xfuse_ops.opendir     = xfuse_cb_opendir;
     g_xfuse_ops.releasedir  = xfuse_cb_releasedir;
+    g_xfuse_ops.statfs      = xfuse_cb_statfs;
 
     fuse_opt_add_arg(&args, "xrdp-chansrv");
-    fuse_opt_add_arg(&args, g_fuse_root_path);
+    fuse_opt_add_arg(&args, "-o");
+    fuse_opt_add_arg(&args, "fsname=xrdp-chansrv");
     //fuse_opt_add_arg(&args, "-s"); /* single threaded mode */
     //fuse_opt_add_arg(&args, "-d"); /* debug mode           */
 
     if (xfuse_init_lib(&args))
     {
+        fuse_opt_free_args(&args);
         xfuse_deinit();
         return -1;
     }
+    fuse_opt_free_args(&args);
 
     g_xfuse_inited = 1;
     return 0;
@@ -627,30 +685,18 @@ xfuse_init(void)
 int
 xfuse_deinit(void)
 {
-    if (g_ch != 0)
+    if (g_se != NULL)
     {
-        fuse_session_remove_chan(g_ch);
-        fuse_unmount(g_mount_point, g_ch);
-        g_ch = 0;
-    }
-
-    if (g_se != 0)
-    {
+        fuse_session_unmount(g_se);
         fuse_session_destroy(g_se);
-        g_se = 0;
+        g_se = NULL;
     }
 
-    if (g_buffer != 0)
-    {
-        g_free(g_buffer);
-        g_buffer = 0;
-    }
+    free(g_buffer.mem);
+    g_buffer.mem = NULL;
 
-    if (g_req_list != 0)
-    {
-        list_delete(g_req_list);
-        g_req_list = 0;
-    }
+    list_delete(g_req_list);
+    g_req_list = 0;
 
     xfuse_deinit_xrdp_fs();
 
@@ -665,35 +711,28 @@ xfuse_deinit(void)
  *****************************************************************************/
 int xfuse_check_wait_objs(void)
 {
-    struct fuse_chan *tmpch;
-    int               rval;
-
-    if (g_ch == 0)
+    if (g_se != NULL)
     {
-        return 0;
-    }
-
-    if (g_sck_can_recv(g_fd, 0))
-    {
-        tmpch = g_ch;
-
-        rval = fuse_chan_recv(&tmpch, g_buffer, g_bufsize);
-        if (rval == -EINTR)
+        if (g_sck_can_recv(fuse_session_fd(g_se), 0))
         {
-            return -1;
-        }
+            int rval = fuse_session_receive_buf(g_se, &g_buffer);
+            if (rval == -EINTR)
+            {
+                return -1;
+            }
 
-        if (rval == -ENODEV)
-        {
-            return -1;
-        }
+            if (rval == -ENODEV)
+            {
+                return -1;
+            }
 
-        if (rval <= 0)
-        {
-            return -1;
-        }
+            if (rval <= 0)
+            {
+                return -1;
+            }
 
-        fuse_session_process(g_se, g_buffer, rval, tmpch);
+            fuse_session_process_buf(g_se, &g_buffer);
+        }
     }
 
     return 0;
@@ -707,17 +746,11 @@ int xfuse_check_wait_objs(void)
 
 int xfuse_get_wait_objs(tbus *objs, int *count, int *timeout)
 {
-    int lcount;
-
-    if (g_ch == 0)
+    if (g_se != NULL)
     {
-        return 0;
+        objs[*count] = fuse_session_fd(g_se);
+        ++(*count);
     }
-
-    lcount = *count;
-    objs[lcount] = g_fd;
-    lcount++;
-    *count = lcount;
 
     return 0;
 }
@@ -738,7 +771,13 @@ int xfuse_create_share(tui32 device_id, const char *dirname)
     if (dirname != NULL && strlen(dirname) > 0 &&
             xfuse_init_xrdp_fs() == 0)
     {
-        xinode = xfs_add_entry(g_xfs, FUSE_ROOT_ID, dirname, (0777 | S_IFDIR));
+        char *newdirname = _fuse_mount_name_colon_char_replace(dirname);
+        xinode = xfs_add_entry(g_xfs, FUSE_ROOT_ID, newdirname, (0777 | S_IFDIR));
+        //free only if _fuse_mount_name_colon_char_replace allocated new string
+        if (newdirname != dirname)
+        {
+            g_free(newdirname);
+        }
         if (xinode == NULL)
         {
             LOG_DEVEL(LOG_LEVEL_DEBUG, "xfs_add_entry() failed");
@@ -894,51 +933,84 @@ int xfuse_file_contents_size(int stream_id, int file_size)
 **                                                                          **
 *****************************************************************************/
 
+/*****************************************************************************/
+/**
+ * FUSE logging function
+ *
+ * Used to get errors from FUSE for the log file
+ * @param fuse_log_level Logging level understood by FUSE
+ * @param fmt Logging format string
+ * @param ap Arguments for above
+ */
+#ifdef FUSE_SET_LOG_FUNC_AVAILABLE
+static void
+xfuse_log_func(enum fuse_log_level fuse_log_level, const char *fmt, va_list ap)
+{
+    char msg[512];
+    enum logLevels level;
+    switch (fuse_log_level)
+    {
+        case FUSE_LOG_ERR:
+            level = LOG_LEVEL_ERROR;
+            break;
+
+        case FUSE_LOG_WARNING:
+            level = LOG_LEVEL_WARNING;
+            break;
+
+        case FUSE_LOG_NOTICE:
+        case FUSE_LOG_INFO:
+            level = LOG_LEVEL_INFO;
+            break;
+
+        case FUSE_LOG_DEBUG:
+            level = LOG_LEVEL_DEBUG;
+            break;
+
+        default:
+            level = LOG_LEVEL_ALWAYS;
+            break;
+    }
+
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    LOG(level, "%s", msg);
+}
+#endif //FUSE_SET_LOG_FUNC_AVAILABLE
+
 /**
  * Initialize FUSE library
  *
  * @return 0 on success, -1 on failure
  *****************************************************************************/
-
 static int xfuse_init_lib(struct fuse_args *args)
 {
-    if (fuse_parse_cmdline(args, &g_mount_point, 0, 0) < 0)
-    {
-        LOG(LOG_LEVEL_ERROR, "fuse_parse_cmdline() failed");
-        fuse_opt_free_args(args);
-        return -1;
-    }
+    int rv = -1;
 
-    if ((g_ch = fuse_mount(g_mount_point, args)) == 0)
+#ifdef FUSE_SET_LOG_FUNC_AVAILABLE
+    fuse_set_log_func(xfuse_log_func);
+#endif
+
+    g_se = fuse_session_new(args, &g_xfuse_ops, sizeof(g_xfuse_ops), 0);
+    if (g_se == NULL)
+    {
+        LOG(LOG_LEVEL_ERROR, "fuse_session_new() failed");
+    }
+    else if (fuse_session_mount(g_se, g_fuse_root_path) != 0)
     {
         LOG(LOG_LEVEL_ERROR, "FUSE mount on %s failed."
             " If %s is already mounted, you must first unmount it",
-            g_mount_point, g_mount_point);
-        fuse_opt_free_args(args);
-        return -1;
+            g_fuse_root_path, g_fuse_root_path);
+        fuse_session_destroy(g_se);
+        g_se = NULL;
     }
-
-    g_se = fuse_lowlevel_new(args, &g_xfuse_ops, sizeof(g_xfuse_ops), 0);
-    if (g_se == 0)
+    else
     {
-        LOG(LOG_LEVEL_ERROR, "fuse_lowlevel_new() failed");
-        fuse_unmount(g_mount_point, g_ch);
-        g_ch = 0;
-        fuse_opt_free_args(args);
-        return -1;
+        g_req_list = list_create();
+        g_req_list->auto_free = 1;
+        rv = 0;
     }
 
-    fuse_opt_free_args(args);
-    fuse_session_add_chan(g_se, g_ch);
-    g_bufsize = fuse_chan_bufsize(g_ch);
-
-    g_buffer = g_new0(char, g_bufsize);
-    g_fd = fuse_chan_fd(g_ch);
-
-    g_req_list = list_create();
-    g_req_list->auto_free = 1;
-
-    return 0;
+    return rv;
 }
 
 /**
@@ -1503,7 +1575,10 @@ void xfuse_devredir_cb_rmdir_or_file(struct state_remove *fip,
     {
         case STATUS_SUCCESS:
         case STATUS_NO_SUCH_FILE:
-            xfs_remove_entry(g_xfs, xinode->inum); /* Remove local copy */
+            if (xinode != NULL)
+            {
+                xfs_remove_entry(g_xfs, xinode->inum); /* Remove local copy */
+            }
             fuse_reply_err(fip->req, 0);
             break;
 
@@ -1546,6 +1621,26 @@ void xfuse_devredir_cb_file_close(struct state_close *fip)
 {
     fuse_reply_err(fip->req, 0);
     xfs_decrement_file_open_count(g_xfs, fip->inum);
+
+    free(fip);
+}
+
+void xfuse_devredir_cb_statfs(struct state_statfs *fip,
+                              const struct statvfs *fss,
+                              enum NTSTATUS IoStatus)
+{
+    int status;
+    if (IoStatus != STATUS_SUCCESS)
+    {
+        status =
+            (IoStatus == STATUS_ACCESS_DENIED) ? EACCES :
+            /* default */                        EIO ;
+        fuse_reply_err(fip->req, status);
+    }
+    else
+    {
+        fuse_reply_statfs(fip->req, fss);
+    }
 
     free(fip);
 }
@@ -1934,7 +2029,8 @@ static void xfuse_cb_unlink(fuse_req_t req, fuse_ino_t parent,
 
 static void xfuse_cb_rename(fuse_req_t req,
                             fuse_ino_t old_parent, const char *old_name,
-                            fuse_ino_t new_parent, const char *new_name)
+                            fuse_ino_t new_parent, const char *new_name,
+                            unsigned int flags)
 {
     XFS_INODE *old_xinode;
     XFS_INODE *new_parent_xinode;
@@ -1942,8 +2038,13 @@ static void xfuse_cb_rename(fuse_req_t req,
     LOG_DEVEL(LOG_LEVEL_DEBUG, "entered: old_parent=%ld old_name=%s new_parent=%ld new_name=%s",
               old_parent, old_name, new_parent, new_name);
 
-    if (strlen(old_name) > XFS_MAXFILENAMELEN ||
-            strlen(new_name) > XFS_MAXFILENAMELEN)
+    // renameat2() flags (in stdio.h) are not supported
+    if (flags != 0)
+    {
+        fuse_reply_err(req, EINVAL);
+    }
+    else if (strlen(old_name) > XFS_MAXFILENAMELEN ||
+             strlen(new_name) > XFS_MAXFILENAMELEN)
     {
         fuse_reply_err(req, ENAMETOOLONG);
     }
@@ -2199,6 +2300,11 @@ static void xfuse_cb_open(fuse_req_t req, fuse_ino_t ino,
             fip->req = req;
             fip->fi = *fi;
             fip->inum = ino;
+
+            if (g_cfg->fuse_direct_io)
+            {
+                fip->fi.direct_io = 1;
+            }
 
             /* we want path minus 'root node of the share' */
             cptr = filename_on_device(full_path);
@@ -2653,6 +2759,75 @@ static void xfuse_cb_releasedir(fuse_req_t req, fuse_ino_t ino,
     xhandle->dir_handle = NULL;
     xfuse_handle_delete(xhandle);
     fuse_reply_err(req, 0);
+}
+
+/*****************************************************************************/
+static void xfuse_cb_statfs(fuse_req_t req, fuse_ino_t ino)
+{
+    XFS_INODE        *xinode;
+
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "entered: ino=%ld", ino);
+
+    if (!(xinode = xfs_get(g_xfs, ino)))
+    {
+        LOG_DEVEL(LOG_LEVEL_ERROR, "inode %ld is not valid", ino);
+        fuse_reply_err(req, ENOENT);
+    }
+    else if (!xinode->is_redirected)
+    {
+        /* specified file is a local resource */
+        struct statvfs vfs_stats = {0};
+        if (g_cfg->fuse_root_report_max_free)
+        {
+            // Report an 95% free max-size filesystem
+            vfs_stats.f_bsize = 0x1000;
+            vfs_stats.f_frsize = vfs_stats.f_bsize;
+#if SIZEOF_FSBLKCNT_T < 8
+            vfs_stats.f_blocks = (fsblkcnt_t) -1;
+#else
+            // Max-size is taken from XFS (8 * 2^60 bytes). Using -1
+            // as a value does not work here.
+            vfs_stats.f_blocks = (fsblkcnt_t)8 * 0x10000 * 0x10000 * 0x10000;
+#endif
+            vfs_stats.f_bfree = vfs_stats.f_blocks - vfs_stats.f_blocks / 20;
+            vfs_stats.f_bavail = vfs_stats.f_bfree;
+            vfs_stats.f_namemax = XFS_MAXFILENAMELEN;
+        }
+        fuse_reply_statfs(req, &vfs_stats);
+    }
+    else
+    {
+        /* specified file resides on redirected share */
+
+        struct state_statfs *fip = g_new0(struct state_statfs, 1);
+        char *full_path = xfs_get_full_path(g_xfs, ino);
+        if (full_path == NULL || fip == NULL)
+        {
+            LOG_DEVEL(LOG_LEVEL_ERROR, "system out of memory");
+            fuse_reply_err(req, ENOMEM);
+            free(full_path);
+            free(fip);
+        }
+        else
+        {
+            const char      *cptr;
+            fip->req = req;
+
+            /* get devredir to statfs the filesystem for the file
+             *
+             * If this call succeeds, further request processing happens in
+             * xfuse_devredir_cb_statfs()
+             */
+            cptr = filename_on_device(full_path);
+            if (devredir_statfs(fip, xinode->device_id, cptr))
+            {
+                LOG_DEVEL(LOG_LEVEL_ERROR, "failed to send devredir_statfs() cmd");
+                fuse_reply_err(req, EREMOTEIO);
+                free(fip);
+            }
+            free(full_path);
+        }
+    }
 }
 
 /******************************************************************************

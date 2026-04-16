@@ -1,4 +1,3 @@
 Makefile.in
 libpainter/Makefile.in
 librfxcodec/Makefile.in
-config.log

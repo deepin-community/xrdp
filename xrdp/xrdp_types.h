@@ -29,16 +29,20 @@
 #include "fifo.h"
 #include "guid.h"
 #include "xrdp_client_info.h"
+#include "xrdp_tconfig.h"
 
 #define MAX_NR_CHANNELS 16
 #define MAX_CHANNEL_NAME 16
 
 /* Code values used in 'xrdp_mm->code=' settings */
 #define XVNC_SESSION_CODE 0
+#define XVNC_UDS_SESSION_CODE 1
 #define XORG_SESSION_CODE 20
 
 /* To check whether touch events has been implemented on session type 'mm' */
-#define XRDP_MM_IMPLEMENTS_TOUCH(mm) ((mm)->code != XVNC_SESSION_CODE)
+#define XRDP_MM_IMPLEMENTS_TOUCH(mm) \
+    (((mm)->code != XVNC_SESSION_CODE) && \
+     ((mm)->code != XVNC_UDS_SESSION_CODE))
 
 struct source_info;
 struct list16;
@@ -440,9 +444,15 @@ struct xrdp_mm
     enum xrdp_egfx_flags egfx_flags;
     int gfx_delay_autologin;
     int mod_uses_wm_screen_for_gfx;
+    /* Whether a working h.264 library is loaded.
+     * We check this at run-time, so that we can fall-back to GFX if
+     * the H.264 library is installed incorrectly */
+    int libh264_loaded;  /* != 0 => H.264 can be used */
     /* Resize on-the-fly control */
     struct display_control_monitor_layout_data *resize_data;
     struct list *resize_queue;
+    /* wait obj for resize_queue
+     * Only allocated when the queue can be processed */
     tbus resize_ready;
 };
 
@@ -566,6 +576,8 @@ struct xrdp_wm
 
     /* configuration derived from xrdp.ini */
     struct xrdp_config *xrdp_config;
+    /* configuration derived from gfx.toml */
+    struct xrdp_tconfig_gfx *gfx_config;
 
     struct xrdp_region *screen_dirty_region;
     int last_screen_draw_time;
@@ -735,6 +747,10 @@ struct xrdp_startup_params
     int tcp_nodelay;
     int tcp_keepalive;
     int use_vsock;
+    // These should be local users/groups, and so we shouldn't need
+    // a lot of storage for them.
+    char runtime_user[64];
+    char runtime_group[64];
 };
 
 /*

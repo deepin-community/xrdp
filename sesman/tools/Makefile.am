@@ -1,5 +1,5 @@
 AM_CPPFLAGS = \
-  -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
+  -DXRDP_CFG_PATH=\"${sysconfdir}/${sysconfsubdir}\" \
   -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
   -I$(top_srcdir)/sesman/libsesman \
   -I$(top_srcdir)/common \
@@ -17,14 +17,10 @@ noinst_PROGRAMS = \
   xrdp-xcon
 
 xrdp_sesrun_SOURCES = \
-  sesrun.c \
-  tools_common.h \
-  tools_common.c
+  sesrun.c
 
 xrdp_sesadmin_SOURCES = \
-  sesadmin.c \
-  tools_common.h \
-  tools_common.c
+  sesadmin.c
 
 xrdp_dis_SOURCES = \
   dis.c

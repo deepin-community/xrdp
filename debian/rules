@@ -12,7 +12,13 @@ export LC_ALL
 shellescape='$(subst ','\'',$(1))'
 shellexport=$(1)=$(call shellescape,${$(1)})
 
+ifeq (i386,${DEB_HOST_ARCH})
+# Fuse3 requires 64 bit off_t, see /include/fuse_common.h, line 1151.
+# For all architectures but i386 autoconf already defines this.
+OUR_CPPFLAGS:=		-D_FILE_OFFSET_BITS=64
+else
 OUR_CPPFLAGS:=
+endif
 OUR_CFLAGS:=
 OUR_LDFLAGS:=		-Wl,--as-needed
 
@@ -52,10 +58,10 @@ ifeq (x32,${DEB_HOST_ARCH})
 CONFIGURE_ARGS+=	--without-simd
 endif
 
-#ifeq (hurd,${DEB_HOST_ARCH_OS})
+ifeq (hurd,${DEB_HOST_ARCH_OS})
 # fuse_lowlevel.h is not yet usable
 CONFIGURE_ARGS+=	--disable-fuse
-#endif
+endif
 
 %:
 	dh $@
